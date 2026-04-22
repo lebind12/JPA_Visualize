@@ -1,10 +1,14 @@
 package com.portfolio.jpa.domain.product;
 
 import com.portfolio.jpa.common.audit.BaseTimeEntity;
+import com.portfolio.jpa.domain.review.Review;
 import jakarta.persistence.*;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Entity
 @Table(name = "products",
@@ -29,6 +33,9 @@ public class Product extends BaseTimeEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "category_id", nullable = false)
     private Category category;
+
+    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY)
+    private List<Review> reviews = new ArrayList<>();
 
     private Product(String name, int price, int stock, Category category) {
         this.name = name;
