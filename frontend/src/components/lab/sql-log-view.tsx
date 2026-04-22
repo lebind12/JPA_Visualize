@@ -5,6 +5,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import { beautifySql } from '@/lib/sql-format';
 
 interface SqlLogViewProps {
   title: 'BAD' | 'FIXED';
@@ -39,17 +40,23 @@ export default function SqlLogView({ title, tone, data }: SqlLogViewProps) {
               </span>
             </span>
           </AccordionTrigger>
-          <AccordionContent className="px-4">
+          <AccordionContent className="px-4 pb-4">
             {data == null ? (
               <p className="text-sm text-muted-foreground">아직 실행되지 않음</p>
             ) : data.sqlLog.length === 0 ? (
               <p className="text-sm text-muted-foreground">SQL이 기록되지 않았습니다</p>
             ) : (
-              <ol className="flex flex-col gap-2 list-decimal list-inside tabular-nums text-xs">
+              <ol
+                className="flex flex-col gap-2 list-decimal list-inside tabular-nums text-xs overflow-y-auto pr-1"
+                style={{ maxHeight: '28rem' }}
+              >
                 {data.sqlLog.map((sql, i) => (
                   <li key={i} className="text-muted-foreground">
-                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre font-mono text-xs text-foreground bg-muted/40 rounded-md p-3">
-                      {sql}
+                    <pre
+                      className="mt-1 overflow-auto whitespace-pre font-mono text-xs leading-5 text-foreground bg-muted/40 rounded-md p-2"
+                      style={{ height: '4.25rem' }}
+                    >
+                      {beautifySql(sql)}
                     </pre>
                   </li>
                 ))}
