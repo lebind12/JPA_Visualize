@@ -61,7 +61,8 @@ docker compose -f docker/docker-compose.yml exec -T mysql \
 - Vite + TypeScript, 함수형 컴포넌트만
 - API 호출은 `src/api/` 레이어로 분리 (axios or fetch 래퍼)
 - 시각화는 Recharts 또는 Chart.js 고려 (확정 전)
-- 백엔드 HTTP 포트는 **18080** 고정 (호스트 8080이 다른 서비스에 상시 점유 중). 프론트는 Vite 기본 포트(5173). `application.yml`의 `server.port=18080`.
+- 백엔드 HTTP 포트는 **18080** 고정 (호스트 8080이 다른 서비스에 상시 점유 중). `application.yml`의 `server.port=18080`.
+- 프론트 Vite 포트는 **15173** 고정 (기본 5173이 다른 앱과 충돌). `vite.config.ts`의 `server.port=15173`, `strictPort: true`. 5173 금지.
 
 ### 공통
 - 비밀값은 `.env`에 두고 커밋 금지. `.env.example`만 커밋.

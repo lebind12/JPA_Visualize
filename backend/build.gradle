@@ -24,6 +24,7 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
+	developmentOnly 'org.springframework.boot:spring-boot-devtools'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'com.mysql:mysql-connector-j'
 	annotationProcessor 'org.projectlombok:lombok'
@@ -42,4 +43,6 @@ tasks.named('test') {
 
 tasks.named('bootRun') {
 	systemProperty 'spring.profiles.active', 'local'
+	// DevTools 재시작 트리거: bootRun이 살아있는 동안 classpath 변경을 감지.
+	// 다른 터미널에서 `./gradlew -t classes`를 돌려 저장 시 자동 재컴파일 → DevTools가 재시작.
 }
