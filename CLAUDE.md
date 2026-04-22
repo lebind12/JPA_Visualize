@@ -33,6 +33,19 @@ cd backend && ./gradlew bootRun
 cd frontend && npm run dev
 ```
 
+### DB 쿼리는 컨테이너 안에서 실행한다
+호스트에 mysql 클라이언트가 없을 수 있고, 있어도 일관성을 위해 **반드시 컨테이너 안**에서 돌린다.
+호스트의 `mysql`/`mysqladmin` 직접 호출은 PreToolUse 훅(`.claude/hooks/block-host-mysql.sh`)이 차단한다.
+
+```bash
+# 원라이너
+docker compose -f docker/docker-compose.yml exec -T mysql \
+  mysql -u jpa -pjpa_password jpa_portfolio -e "SELECT COUNT(*) FROM members;"
+
+# 슬래시 커맨드
+/db-query SELECT COUNT(*) FROM members;
+```
+
 ## Conventions
 
 ### Backend

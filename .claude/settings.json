@@ -34,9 +34,7 @@
       "Bash(rg:*)",
       "Bash(mkdir:*)",
       "Bash(touch:*)",
-      "Bash(curl:*)",
-      "Bash(mysql:*)",
-      "Bash(mysqladmin:*)"
+      "Bash(curl:*)"
     ],
     "deny": [
       "Bash(rm -rf /*)",
@@ -51,5 +49,18 @@
   },
   "env": {
     "JPA_PROJECT_MYSQL_PORT": "23306"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-host-mysql.sh"
+          }
+        ]
+      }
+    ]
   }
 }
