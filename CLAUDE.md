@@ -54,6 +54,18 @@ cd frontend && npm run dev
 - 비밀값은 `.env`에 두고 커밋 금지. `.env.example`만 커밋.
 - 포트 변경, 스택 변경은 반드시 `CLAUDE.md` 업데이트 후 진행.
 
+## 개발 워크플로우 (이 프로젝트 고유)
+
+이 프로젝트는 다음 2개 에이전트 + 반복 사이클로 진행한다.
+
+- **`jpa-director`** (지시 전용, 코드 수정 불가) — 다음 한 스텝의 구현 지시서를 작성하고 결과 검증 리포트를 낸다.
+- **`jpa-developer`** (개발 전용) — 지시서대로 코드를 구현하고 빌드/테스트까지 돌려 PASS/FAIL로 보고한다.
+
+### 시나리오 구현 규칙
+- **한 번에 시나리오 1개.** `Bad/Fixed` end-to-end(백엔드 curl 검증 + 프론트 `/lab/xxx` 렌더)가 완료되고 **사용자가 직접 확인한 뒤**에만 다음 시나리오로 넘어간다.
+- 여러 시나리오를 한꺼번에 구현·병합하지 않는다.
+- 플랜 파일(`/Users/woolee/.claude/plans/harmonic-launching-melody.md`)의 Phase 5 순서를 따른다.
+
 ## Git Commit 규칙 (반드시 지킬 것)
 - 커밋 메시지는 **반드시 한글**로 작성한다. (제목·본문 모두)
 - **author는 로컬 `git config user.name` / `user.email` 값을 그대로 사용**한다. `--author` 플래그로 재지정하거나 git config를 임의로 수정하지 말 것.
