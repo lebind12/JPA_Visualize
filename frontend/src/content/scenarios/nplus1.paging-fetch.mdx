@@ -1,5 +1,18 @@
 import { DomainDiagram } from '@/components/domain/domain-diagram'
 
+## N+1 문제란?
+
+부모 엔티티 N건을 조회한 뒤 각 자식 연관에 LAZY 접근할 때마다 SELECT가 1회씩 추가 발생해 총 **1 + N** 쿼리가 실행되는 문제입니다.
+네트워크 왕복과 퍼시스턴스 컨텍스트 오버헤드가 N에 곱으로 증가해 데이터 규모가 커질수록 심각해집니다.
+해결책으로는 **fetch join**, **@EntityGraph**, **default_batch_fetch_size** / **@BatchSize**가 있으며, 연관 형태(단건 vs 컬렉션)와 페이징 여부에 따라 적절한 방법을 선택합니다.
+본 시나리오는 **Pageable + 컬렉션 fetch join**의 **HHH000104** 메모리 페이징 안티패턴과 2단계 조회 복구 패턴을 다룹니다.
+
+## 한줄 요약
+
+**Pageable**과 **컬렉션 fetch join**(**join fetch o.items**)을 한 쿼리에 섞으면,
+Hibernate는 **HHH000104** 경고와 함께 **DB에 LIMIT을 내리지 않고 전체 row를 받은 뒤 메모리에서 잘라냅니다.**
+쿼리 수는 1개로 "적어 보이지만" 실제로는 OOM 위험이 큰 안티패턴입니다.
+
 ## 구현 코드
 
 ### BAD
@@ -64,12 +77,6 @@ List<Long> findFirst10OrderIds(Pageable pageable);   // DB에 LIMIT ? 를 내린
 """)
 List<Order> findAllWithGraphByIds(@Param("ids") List<Long> ids);
 ```
-
-## 한줄 요약
-
-**Pageable**과 **컬렉션 fetch join**(**join fetch o.items**)을 한 쿼리에 섞으면,
-Hibernate는 **HHH000104** 경고와 함께 **DB에 LIMIT을 내리지 않고 전체 row를 받은 뒤 메모리에서 잘라냅니다.**
-쿼리 수는 1개로 "적어 보이지만" 실제로는 OOM 위험이 큰 안티패턴입니다.
 
 ## 건드리는 도메인
 

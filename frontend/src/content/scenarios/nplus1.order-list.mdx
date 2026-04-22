@@ -1,5 +1,17 @@
 import { DomainDiagram } from '@/components/domain/domain-diagram'
 
+## N+1 문제란?
+
+부모 엔티티 N건을 조회한 뒤 각 자식 연관에 LAZY 접근할 때마다 SELECT가 1회씩 추가 발생해 총 **1 + N** 쿼리가 실행되는 문제입니다.
+네트워크 왕복과 퍼시스턴스 컨텍스트 오버헤드가 N에 곱으로 증가해 데이터 규모가 커질수록 심각해집니다.
+해결책으로는 **fetch join**, **@EntityGraph**, **default_batch_fetch_size** / **@BatchSize**가 있으며, 연관 형태(단건 vs 컬렉션)와 페이징 여부에 따라 적절한 방법을 선택합니다.
+본 시나리오는 **@EntityGraph**로 id 페이징 + 연관 일괄 로딩 패턴을 사용합니다.
+
+## 한줄 요약
+
+주문 10건을 조회한 뒤 각 주문의 **member** / **items** / (각 item의) **product**를 LAZY로 반복 접근하면,
+주문당 **1 + member 1 + items 1 + product N** 쿼리가 터지면서 전체 쿼리 수가 폭발적으로 증가합니다.
+
 ## 구현 코드
 
 ### BAD
@@ -55,11 +67,6 @@ public Map<String, Object> runFixed() {
 """)
 List<Order> findAllWithGraphByIds(@Param("ids") List<Long> ids);
 ```
-
-## 한줄 요약
-
-주문 10건을 조회한 뒤 각 주문의 **member** / **items** / (각 item의) **product**를 LAZY로 반복 접근하면,
-주문당 **1 + member 1 + items 1 + product N** 쿼리가 터지면서 전체 쿼리 수가 폭발적으로 증가합니다.
 
 ## 건드리는 도메인
 
