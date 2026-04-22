@@ -1,0 +1,91 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 구현 코드
+
+### BAD
+
+```java
+// ProductReviewsScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runBad() {
+  List<Long> ids = productRepository.findFirst20ProductIds(PageRequest.of(0, 20));
+  // ... 누산 변수 초기화
+  for (Long id : ids) {
+    Product p = productRepository.findById(id).orElseThrow();   // ① 상품 단건 SELECT
+    List<Review> rs = p.getReviews();                            // ② reviews 컬렉션 초기화
+    int cnt = rs.size();
+    double avg = cnt == 0 ? 0.0 : rs.stream().mapToInt(Review::getRating).average().orElse(0.0);
+    // ... 반올림·집계
+    entityManager.flush();
+    entityManager.clear();   // ③ 전역 default_batch_fetch_size=100 효과 회피
+  }
+  // ... return
+}
+```
+
+### FIXED
+
+```java
+// ProductReviewsScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed() {
+  List<Long> ids = productRepository.findFirst20ProductIds(PageRequest.of(0, 20));   // 쿼리 1
+  List<Product> products = productRepository.findAllByIds(ids);                      // 쿼리 2
+  for (Product p : products) {
+    List<Review> rs = p.getReviews();   // 첫 접근 시점에 default_batch_fetch_size로 IN 배치 로드 — 쿼리 3 (전체 상품의 reviews 한 번에)
+    // ... 동일 계산
+  }
+  // ... return
+}
+```
+
+```java
+// ProductRepository.java
+@Query("select p from Product p where p.id in :ids order by p.id asc")
+List<Product> findAllByIds(@Param("ids") List<Long> ids);
+// @EntityGraph/@BatchSize 없음 — 전역 default_batch_fetch_size=100 이 자동 작동
+```
+
+## 한줄 요약
+
+상품 20건을 돌며 **product.getReviews().size()** / **rating** 평균을 집계합니다.
+Bad는 상품마다 리뷰 컬렉션 초기화 SELECT가 1번씩 발생(1 + N), Fixed는 **같은 반복 접근**이지만
+전역 **default_batch_fetch_size=100**이 작동해 IN 묶음 1회로 수렴합니다.
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Product", "Review"]} height="380px" fitView />
+
+**Product → Review**(**@OneToMany mappedBy="product" LAZY**) 하나의 컬렉션이 주인공.
+
+## Bad 쪽에서 벌어지는 일
+
+- 상품 id 20개를 뽑고 **findById(id)**를 루프로 호출 → 상품 단건 SELECT 20회.
+- **p.getReviews().size()** / rating 평균 접근 시 **리뷰 컬렉션 초기화 SELECT가 상품마다 1회씩**.
+- 이 시나리오도 5-1과 동일하게 루프 끝마다 **entityManager.flush() + clear()**로 배치 묶임을 회피합니다 — 전역 **default_batch_fetch_size**가 사실상 무력화된 상태.
+
+## Fixed 쪽에서 벌어지는 일
+
+- **findFirst20ProductIds** 1회 → **findAllByIds(ids)** 1회(상품 20건을 한 방에)
+- 그 뒤 **동일한 p.getReviews() 반복 접근**을 하지만, **clear()** 호출이 없으므로 영속성 컨텍스트가 유지됨.
+- 전역 **default_batch_fetch_size=100** 설정이 작동해 **여러 상품의 reviews를 IN 절 한 번**으로 배치 로딩.
+- 결과: 41 쿼리 → 3 쿼리 (id 조회 + 상품 IN + reviews 배치 IN).
+
+## 대안
+
+- **@BatchSize(size = 100)**을 **Product.reviews** 필드에 직접 붙여 전역 설정 없이도 같은 효과를 낼 수 있습니다.
+- 정말 "개수와 평균"만 필요하다면 DTO 집계 쿼리가 가장 빠릅니다:
+  ```java
+  select r.product.id, count(r), avg(r.rating)
+  from Review r
+  where r.product.id in :ids
+  group by r.product.id
+  ```
+  한 번의 SQL로 끝나지만, 연관 그래프가 복잡해질수록 재사용성이 떨어집니다.
+
+## 참고
+
+- [Vlad Mihalcea — default_batch_fetch_size vs @BatchSize](https://vladmihalcea.com/the-best-way-to-fix-the-hibernate-multiplebagfetchexception/)
+- [Baeldung — @BatchSize annotation](https://www.baeldung.com/hibernate-batchsize)

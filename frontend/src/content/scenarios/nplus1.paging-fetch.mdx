@@ -1,0 +1,118 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 구현 코드
+
+### BAD
+
+```java
+// PagingFetchScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runBad() {
+  Pageable pageable = PageRequest.of(0, 10);
+  List<Order> orders = orderRepository.findAllFetchItems(pageable);   // ← Pageable + fetch join (HHH000104 유발)
+  for (Order o : orders) {
+    for (OrderItem it : o.getItems()) {
+      // ... 집계
+    }
+  }
+  // ... return
+}
+```
+
+```java
+// OrderRepository.java
+@Query("""
+    select distinct o
+    from Order o
+    join fetch o.items
+    order by o.id asc
+""")
+List<Order> findAllFetchItems(Pageable pageable);
+// @EntityGraph 없음, 컬렉션 fetch join + Pageable → Hibernate가 DB에 LIMIT 없이 쿼리를 내리고 메모리에서 slicing
+```
+
+### FIXED
+
+```java
+// PagingFetchScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed() {
+  List<Long> ids = orderRepository.findFirst10OrderIds(PageRequest.of(0, 10));   // 쿼리 1 (LIMIT 10 DB 레벨)
+  List<Order> orders = orderRepository.findAllWithGraphByIds(ids);               // 쿼리 2 (@EntityGraph)
+  for (Order o : orders) {
+    for (OrderItem it : o.getItems()) {
+      // ... 집계
+    }
+  }
+  // ... return
+}
+```
+
+```java
+// OrderRepository.java
+@Query("select o.id from Order o order by o.id asc")
+List<Long> findFirst10OrderIds(Pageable pageable);   // DB에 LIMIT ? 를 내린다
+
+@EntityGraph(attributePaths = {"member", "items", "items.product"})
+@Query("""
+    select distinct o
+    from Order o
+    where o.id in :ids
+    order by o.id asc
+""")
+List<Order> findAllWithGraphByIds(@Param("ids") List<Long> ids);
+```
+
+## 한줄 요약
+
+**Pageable**과 **컬렉션 fetch join**(**join fetch o.items**)을 한 쿼리에 섞으면,
+Hibernate는 **HHH000104** 경고와 함께 **DB에 LIMIT을 내리지 않고 전체 row를 받은 뒤 메모리에서 잘라냅니다.**
+쿼리 수는 1개로 "적어 보이지만" 실제로는 OOM 위험이 큰 안티패턴입니다.
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Order", "OrderItem"]} height="380px" fitView />
+
+**Order → OrderItem**(**@OneToMany LAZY**) 컬렉션이 fetch join 대상.
+
+## Bad 쪽에서 벌어지는 일
+
+```jpql
+select distinct o
+from Order o
+join fetch o.items
+order by o.id asc
+```
+
+- 이 쿼리에 **PageRequest.of(0, 10)**을 그대로 넘기면, Hibernate는 DB에게 **LIMIT**을 **보내지 않습니다**.
+- 대신 전체 row(주문 5000건 × 평균 아이템 4~5건 = 20,000+ row)를 JVM 힙에 올린 다음, **메모리에서 distinct + 상위 10건 slice**를 수행합니다.
+- 쿼리 수는 **1개**이지만 메모리·네트워크 비용은 상한이 없습니다. 서버 콘솔에 **HHH000104: firstResult/maxResults specified with collection fetch; applying in memory** WARN 로그가 찍힙니다.
+
+## Fixed 쪽에서 벌어지는 일
+
+- 5-1의 Fixed와 동일한 **2단계 조회 패턴**:
+  1. **findFirst10OrderIds(Pageable)** — **order by o.id asc** + **LIMIT 10** (DB 레벨 페이징, SQL에 **limit ?** 포함).
+  2. **findAllWithGraphByIds(ids)** — **@EntityGraph**로 연관 전부를 한 번에 로드.
+- 쿼리 수는 **2개**로 Bad보다 늘어났지만, **DB가 실제로 상위 10건만 내려주므로 메모리 안전**.
+- 교훈: "쿼리 수가 전부가 아니다". 1 쿼리로 끝나도 DB가 전체 row를 내려준다면 안티패턴.
+
+## 왜 쿼리 수 비교가 오해를 부르는가
+
+| | Bad | Fixed |
+|---|---|---|
+| queryCount | **1** | 2 |
+| sqlLog의 **LIMIT ?** 포함 여부 | 없음 | 있음 (id 조회 SQL에) |
+| 메모리 | O(전체 row) | O(10 × 평균 아이템 수) |
+| 스케일 | ❌ 데이터 증가 시 OOM | ✅ 선형 |
+
+## 대안
+
+- **@BatchSize**로 해결하려는 시도도 가능하지만, 페이징 + 컬렉션 fetch의 근본 문제(**HHH000104**)를 피하지는 못합니다.
+- DTO 프로젝션은 엔티티 그래프가 간단할 때만 유효. 복잡 그래프엔 2단계 조회가 가장 무난합니다.
+
+## 참고
+
+- [Vlad Mihalcea — The best way to fix the Hibernate MultipleBagFetchException](https://vladmihalcea.com/the-best-way-to-fix-the-hibernate-multiplebagfetchexception/)
+- [Hibernate 이슈 — HHH000104 warning](https://hibernate.atlassian.net/browse/HHH-5613)

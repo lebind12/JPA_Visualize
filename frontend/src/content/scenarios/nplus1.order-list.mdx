@@ -1,0 +1,91 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 구현 코드
+
+### BAD
+
+```java
+// OrderListScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runBad() {
+  List<Long> ids = orderRepository.findFirst10OrderIds(PageRequest.of(0, 10));
+  // ... 누산 변수 초기화
+  for (Long id : ids) {
+    Order o = orderRepository.findById(id).orElseThrow();   // ① 주문 단건 SELECT
+    o.getMember().getName();                                 // ② member LAZY 초기화
+    for (OrderItem it : o.getItems()) {                      // ③ items 컬렉션 초기화
+      it.getProduct().getName();                             // ④ product LAZY 초기화
+      // ... 집계
+    }
+    entityManager.flush();
+    entityManager.clear();   // ⑤ 전역 default_batch_fetch_size=100 효과를 회피
+  }
+  // ... return
+}
+```
+
+### FIXED
+
+```java
+// OrderListScenario.java
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed() {
+  List<Long> ids = orderRepository.findFirst10OrderIds(PageRequest.of(0, 10));   // 쿼리 1
+  List<Order> orders = orderRepository.findAllWithGraphByIds(ids);               // 쿼리 2
+  for (Order o : orders) {
+    o.getMember().getName();                 // 이미 로드됨 — 쿼리 없음
+    for (OrderItem it : o.getItems()) {
+      it.getProduct().getName();             // 이미 로드됨 — 쿼리 없음
+    }
+  }
+  // ... return
+}
+```
+
+```java
+// OrderRepository.java
+@EntityGraph(attributePaths = {"member", "items", "items.product"})
+@Query("""
+    select distinct o
+    from Order o
+    where o.id in :ids
+    order by o.id asc
+""")
+List<Order> findAllWithGraphByIds(@Param("ids") List<Long> ids);
+```
+
+## 한줄 요약
+
+주문 10건을 조회한 뒤 각 주문의 **member** / **items** / (각 item의) **product**를 LAZY로 반복 접근하면,
+주문당 **1 + member 1 + items 1 + product N** 쿼리가 터지면서 전체 쿼리 수가 폭발적으로 증가합니다.
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Order", "Member", "OrderItem", "Product"]} height="380px" fitView />
+
+**Order → Member**(**@ManyToOne LAZY**), **Order → OrderItem**(**@OneToMany LAZY**),
+**OrderItem → Product**(**@ManyToOne LAZY**) — 세 개의 LAZY 연관을 "반복 접근"합니다.
+
+## Bad 쪽에서 벌어지는 일
+
+- **orderRepository.findById(id)**로 주문 하나를 꺼낸 뒤 **o.getMember().getName()** 접근 → member SELECT 1회.
+- **o.getItems()** 순회 시 컬렉션 초기화 SELECT 1회, 내부에서 **it.getProduct().getName()** 접근 시 각 아이템의 product SELECT 1회씩.
+- 전역 **default_batch_fetch_size=100**이 있어도, 각 루프 끝에 **entityManager.flush() + clear()**로 영속성 컨텍스트를 비워 **배치 묶임을 의도적으로 회피**합니다. 즉, 이 시나리오의 Bad는 "배치 페치가 없는 교과서적 N+1"을 재현합니다.
+
+## Fixed 쪽에서 벌어지는 일
+
+- 먼저 **findFirst10OrderIds(PageRequest)**로 **ID만 페이징**(쿼리 1).
+- 그 다음 **findAllWithGraphByIds(ids)**에 붙은 **@EntityGraph({"member", "items", "items.product"})**로 필요한 연관 전부를 **단일 쿼리**에 묶어 로딩(쿼리 1).
+- 결과적으로 Bad의 41 쿼리가 Fixed에서는 2 쿼리로 수렴합니다.
+
+## 대안
+
+- **fetch join**만으로 **member**·**items**를 끌어오는 것도 가능. 단 **Pageable**과 결합하면 **HHH000104** 경고(→ 5-3 **nplus1.paging-fetch**)를 유발합니다.
+- 통계/집계만 필요하면 DTO 프로젝션(**select new Dto(...)**)이 가장 빠릅니다. 엔티티 그래프 확장성은 떨어져요.
+
+## 참고
+
+- [Baeldung — N+1 Problem in Hibernate and Spring Data JPA](https://www.baeldung.com/spring-hibernate-n1-problem)
+- [Thorben Janssen — LazyInitializationException & fetch strategies](https://thorben-janssen.com/lazyinitializationexception/)

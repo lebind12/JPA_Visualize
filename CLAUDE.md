@@ -77,6 +77,25 @@ docker compose -f docker/docker-compose.yml exec -T mysql \
 - 백엔드 HTTP 포트는 **18080** 고정 (호스트 8080이 다른 서비스에 상시 점유 중). `application.yml`의 `server.port=18080`.
 - 프론트 Vite 포트는 **15173** 고정 (기본 5173이 다른 앱과 충돌). `vite.config.ts`의 `server.port=15173`, `strictPort: true`. 5173 금지.
 
+### MDX 해설 파일 (`frontend/src/content/scenarios/*.mdx`)
+- **인라인 백틱(`` `x` ``)을 쓰지 말 것.** prose + shadcn 테마에서 인라인 code 렌더링이 일관되지 않아 가독성이 떨어진다. 강조·식별자·문자열 표기는 **`**bold**`**(볼드)로 대체한다.
+  - 예) `` `findById(id)` `` → `**findById(id)**`
+  - 예) `` `@EntityGraph` `` → `**@EntityGraph**`
+- 멀티라인 **펜스드 코드 블록**(```` ```java ```` … ```` ``` ````)은 그대로 유지. 이건 prose에서 정상 렌더되고 코드 구조를 표현하는 데 대체 수단이 없다.
+- **최상단에 "구현 코드" 섹션 필수** — "한줄 요약"보다 먼저 나온다. 다음 구조를 따른다:
+  ```
+  ## 구현 코드
+
+  ### BAD
+  (해당 Scenario.runBad() 본문을 펜스드 java 블록으로 발췌. 핵심 LAZY 접근/N+1 유발 라인이 드러나게.)
+
+  ### FIXED
+  (Scenario.runFixed() 본문 + FIXED에서 사용한 핵심 Repository 메서드 시그니처·JPQL 펜스드 java 블록으로.)
+  ```
+  - 파일 경로 주석(예: `// OrderListScenario.java`)을 각 블록 첫 줄에 넣어 "어디 있는 코드인지" 명확화.
+  - 집계/누산 보일러플레이트는 **생략 허용**(`...` 으로 표기). 교육 포인트가 되는 라인만 남긴다.
+- 새 시나리오 MDX 추가 시에도 위 규칙을 전부 따른다.
+
 ### 공통
 - 비밀값은 `.env`에 두고 커밋 금지. `.env.example`만 커밋.
 - 포트 변경, 스택 변경은 반드시 `CLAUDE.md` 업데이트 후 진행.

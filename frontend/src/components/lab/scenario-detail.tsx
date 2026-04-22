@@ -4,6 +4,7 @@ import VariantRunner from '@/components/lab/variant-runner';
 import MetricsCard from '@/components/lab/metrics-card';
 import CompareBarChart from '@/components/lab/compare-bar-chart';
 import SqlLogView from '@/components/lab/sql-log-view';
+import { ExplanationSection } from '@/components/lab/explanation-section';
 
 interface ScenarioDetailProps {
   scenario: ScenarioMeta;
@@ -60,6 +61,8 @@ export default function ScenarioDetail({ scenario }: ScenarioDetailProps) {
         <SqlLogView title="BAD"   tone="bad"   data={bad.data} />
         <SqlLogView title="FIXED" tone="fixed" data={fixed.data} />
       </div>
+
+      <ExplanationSection scenarioId={scenario.id} />
     </div>
   );
 }
