@@ -1,0 +1,31 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: jpa-portfolio-mysql
+    restart: unless-stopped
+    ports:
+      # 호스트 포트 23306 → 컨테이너 내부 3306
+      # 3306은 호스트 기존 MySQL과 충돌 가능성 때문에 사용하지 않음
+      - "23306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-jpa_portfolio}
+      MYSQL_USER: ${MYSQL_USER:-jpa}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-jpa_password}
+      TZ: Asia/Seoul
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+09:00
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  mysql-data:
+    name: jpa-portfolio-mysql-data
