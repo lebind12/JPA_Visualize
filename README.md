@@ -138,7 +138,7 @@ docker compose -f docker/docker-compose.yml exec -T mysql \
 | 영역     | 스택                                                                |
 | -------- | ------------------------------------------------------------------- |
 | Backend  | Spring Boot 3.5, Java 21, Spring Data JPA, Hibernate, Lombok, AOP   |
-| Frontend | Vite, React 19, TypeScript, Tailwind v4, shadcn/ui (Nova), Recharts |
+| Frontend | Vite, React 19, TypeScript, Tailwind v4, shadcn/ui (Nova), Recharts, react-flow(@xyflow), MDX |
 | DB       | MySQL 8.4 (Docker, 호스트 포트 **23306**)                           |
 | Test     | JUnit 5, Testcontainers-MySQL                                       |
 
@@ -177,19 +177,24 @@ JPAProject/
 │       │   └─ review/   (Review, ReviewRepository)
 │       └─ demo/                         # 시나리오 모듈
 │           ├─ _framework/               # ScenarioRegistry / ScenarioMeta / ScenarioRunResponse / MetaController
-│           └─ hello/                    # 더미 시나리오 (프레임워크 스모크 테스트)
+│           ├─ hello/                    # 더미 시나리오 (프레임워크 스모크 테스트)
+│           └─ nplus1/                   # OrderList · ProductReviews · PagingFetch (Scenario + Controller)
 │
-├─ frontend/                             # Vite + React + TS
+├─ frontend/                             # Vite + React + TS + MDX + react-flow
 │   └─ src/
-│       ├─ main.tsx · index.css
-│       ├─ app/        (root-layout, routes, theme-provider/context, use-theme)
+│       ├─ main.tsx · index.css · mdx.d.ts
+│       ├─ app/        (root-layout, landing-layout, routes, theme-provider/context)
 │       ├─ api/        (client.ts, demo.ts)
+│       ├─ pages/landing/                # ★ 랜딩 4-블럭 (hero/domain/demo/stack-footer)
+│       ├─ content/scenarios/            # ★ 시나리오별 MDX 해설 (구현 코드 + 도메인 하이라이트 + Bad/Fixed 설명)
 │       ├─ components/
 │       │   ├─ nav/    (top-nav, theme-toggle)
+│       │   ├─ domain/ (graph.ts, entity-node, domain-diagram)   # ★ react-flow ERD
 │       │   ├─ ui/     (button, accordion — shadcn)
 │       │   └─ lab/    (category-page, scenario-sidebar, scenario-detail,
-│       │              variant-runner, metrics-card, compare-bar-chart, sql-log-view)
-│       ├─ hooks/      (useScenarios, useRunScenario)
+│       │              variant-runner, metrics-card, compare-bar-chart, sql-log-view,
+│       │              explanation-section)                       # ★ 시나리오 해설 MDX 동적 로드
+│       ├─ hooks/      (useScenarios, useRunScenario, useLenis)
 │       ├─ types/scenario.ts
 │       └─ lib/utils.ts
 │
@@ -209,8 +214,9 @@ JPAProject/
 | 2     | 도메인 엔티티 6개 + 리포지토리 + `DemoSeeder` (local 프로필)                                                          | ✅               |
 | 3     | 측정 프레임워크 (`SqlCaptureInspector` · `MetricsRecorder` · `@DemoRun` AOP · `ScenarioRunResponse`)                  | ✅               |
 | 4     | 프론트 최소 연결 (RootLayout · TopNav · 카테고리 2-페인 · VariantRunner · MetricsCard · CompareBarChart · SqlLogView) | ✅               |
-| **5** | **시나리오 반복 구현 (Per-Scenario Cycle)**                                                                           | 🔜 **진행 예정** |
-| 6     | 랜딩 페이지 마감 (Hero · Bento · Stack · Footer)                                                                      | ⏳               |
+| **5** | **시나리오 반복 구현 (Per-Scenario Cycle)** — N+1 3개 완료(5-1·5-2·5-3) / Lock·TX·Persistence 9개 남음                | 🚧 **진행 중**   |
+| 5.5   | 랜딩 4-블럭 스크롤 스냅 재구성 + react-flow 도메인 ERD + MDX 시나리오 해설 시스템                                     | ✅               |
+| 6     | 랜딩 폴리시 · Bento 디자인 다듬기                                                                                     | ⏳               |
 | 7     | Testcontainers 회귀 테스트                                                                                            | ⏳               |
 
 ---
@@ -225,11 +231,11 @@ JPAProject/
 
 ### A. N+1 / 페치 전략 — `/lab/n-plus-one`
 
-| #   | ID                       | 핵심 Bad                                                       | 핵심 Fixed                                    |
-| --- | ------------------------ | -------------------------------------------------------------- | --------------------------------------------- |
-| 5-1 | `nplus1.order-list`      | 주문 목록 후 각 주문의 회원·아이템 LAZY 반복 접근 → 1 + N 쿼리 | fetch join + `@EntityGraph`                   |
-| 5-2 | `nplus1.product-reviews` | 상품 목록 + 리뷰 컬렉션 반복 접근                              | `default_batch_fetch_size` 또는 `@BatchSize`  |
-| 5-3 | `nplus1.paging-fetch`    | 페이징 + 컬렉션 fetch join → `HHH000104` 재현                  | 2단계 조회(ID만 페이징 → `where id in (...)`) |
+| #   | ID                       | 핵심 Bad                                                       | 핵심 Fixed                                    | 상태 |
+| --- | ------------------------ | -------------------------------------------------------------- | --------------------------------------------- | ---- |
+| 5-1 | `nplus1.order-list`      | 주문 목록 후 각 주문의 회원·아이템 LAZY 반복 접근 → 1 + N 쿼리 | fetch join + `@EntityGraph` (41 → 2 쿼리)     | ✅   |
+| 5-2 | `nplus1.product-reviews` | 상품 목록 + 리뷰 컬렉션 반복 접근                              | `default_batch_fetch_size=100` (41 → 3 쿼리)  | ✅   |
+| 5-3 | `nplus1.paging-fetch`    | 페이징 + 컬렉션 fetch join → `HHH000104` 재현                  | 2단계 조회(ID만 페이징 → `where id in (...)`) | ✅   |
 
 ### B. 락 / 동시성 — `/lab/lock` + `/lab/concurrency`
 
