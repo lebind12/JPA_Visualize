@@ -19,12 +19,12 @@ spring:
           batch_size: 50
         order_inserts: true
         order_updates: true
-        # statement_inspector: Phase 3에서 SqlCaptureInspector 클래스 추가 후 활성화
+        # statement_inspector: Phase 3 적용 완료 — HibernatePropertiesCustomizer로 등록
         # session_factory:
         #   statement_inspector: com.portfolio.jpa.common.metrics.SqlCaptureInspector
 
 server:
-  port: 8080
+  port: 18080
 
 logging:
   level:
