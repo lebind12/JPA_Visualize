@@ -16,6 +16,7 @@ export interface EntityField {
 export interface EntityData {
   id: EntityId
   label: EntityId
+  tableName: string
   fields: EntityField[]
   position: { x: number; y: number }
 }
@@ -32,6 +33,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'Member',
     label: 'Member',
+    tableName: 'members',
     position: { x: 40, y: 40 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -42,6 +44,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'Order',
     label: 'Order',
+    tableName: 'orders',
     position: { x: 340, y: 40 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -53,6 +56,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'Category',
     label: 'Category',
+    tableName: 'categories',
     position: { x: 920, y: 40 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -62,6 +66,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'OrderItem',
     label: 'OrderItem',
+    tableName: 'order_items',
     position: { x: 340, y: 280 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -74,6 +79,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'Product',
     label: 'Product',
+    tableName: 'products',
     position: { x: 640, y: 280 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -86,6 +92,7 @@ export const ENTITIES: EntityData[] = [
   {
     id: 'Review',
     label: 'Review',
+    tableName: 'reviews',
     position: { x: 640, y: 540 },
     fields: [
       { name: 'id', type: 'Long', pk: true },
@@ -141,3 +148,20 @@ export const RELATIONS: RelationEdge[] = [
     cardinality: 'ManyToOne',
   },
 ]
+
+/** SQL의 테이블 이름 → 엔티티 ID 역매핑. SQL 파서가 사용. */
+export const TABLE_TO_ENTITY: Record<string, EntityId> = ENTITIES.reduce(
+  (acc, e) => {
+    acc[e.tableName] = e.id
+    return acc
+  },
+  {} as Record<string, EntityId>,
+)
+
+/** 두 엔티티 사이의 RelationEdge id를 찾는다 (방향 무관). 없으면 null. */
+export function findEdgeId(a: EntityId, b: EntityId): string | null {
+  const rel = RELATIONS.find(
+    (r) => (r.source === a && r.target === b) || (r.source === b && r.target === a),
+  )
+  return rel?.id ?? null
+}
