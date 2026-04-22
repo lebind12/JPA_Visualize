@@ -16,6 +16,7 @@ import static org.springframework.http.HttpStatus.BAD_REQUEST;
 public class ConcurrentRunController {
 
     private static final String LOCK_OPTIMISTIC_STOCK = "lock.optimistic-stock";
+    private static final String LOCK_PESSIMISTIC_STOCK = "lock.pessimistic-stock";
 
     private final ConcurrentRunner concurrentRunner;
 
@@ -24,7 +25,7 @@ public class ConcurrentRunController {
             @PathVariable String scenarioId,
             @RequestBody ConcurrentRunRequest req
     ) {
-        if (!LOCK_OPTIMISTIC_STOCK.equals(scenarioId)) {
+        if (!LOCK_OPTIMISTIC_STOCK.equals(scenarioId) && !LOCK_PESSIMISTIC_STOCK.equals(scenarioId)) {
             throw new ResponseStatusException(BAD_REQUEST, "지원하지 않는 scenarioId: " + scenarioId);
         }
         if (req.threads() < 1 || req.threads() > 50) {

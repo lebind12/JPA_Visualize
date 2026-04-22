@@ -1,0 +1,99 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { PessimisticLockTimeline } from '@/components/lab/viz/PessimisticLockTimeline'
+
+## 비관적 락이란?
+
+SELECT ... FOR UPDATE로 조회 시점에 row를 선점하고 트랜잭션 종료(commit/rollback)까지 다른 트랜잭션이 같은 row를 읽기·수정하지 못하게 막는 방식입니다.
+"비관적"이란 이름은 충돌이 잦다고 가정하고 사전에 막는다는 뜻입니다.
+비교: 낙관적 락은 **@Version**으로 충돌을 사후 감지해 재시도합니다. 충돌이 잦으면 비관적, 드물면 낙관적 락이 유리합니다.
+
+## 과정
+
+BAD는 순수 UPDATE로 경쟁 시 잃어버린 갱신이 발생합니다.
+FIXED는 **SELECT ... FOR UPDATE**로 한 트랜잭션이 row를 점유하는 동안 다른 트랜잭션은 DB 수준에서 대기하다 순차 실행됩니다.
+
+<PessimisticLockTimeline />
+
+## 한줄 요약
+
+**@Lock(PESSIMISTIC_WRITE)**를 붙이면 Hibernate가 **SELECT ... FOR UPDATE**를 생성해 row를 선점하고, 다른 트랜잭션은 대기 후 직렬화되어 재시도 없이도 정합성이 유지됩니다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// PessimisticStockScenario.java — executeBadOnce()
+// @Version 없이 read-modify-write 경쟁 재현
+int currentStock = ((Number) entityManager
+    .createNativeQuery("select stock from products where id = ?")
+    .setParameter(1, productId)
+    .getSingleResult()).intValue();
+
+int newStock = currentStock - quantity;
+// 다른 트랜잭션이 같은 stock 값을 읽고 동시에 UPDATE하면
+// 둘 다 성공 → 잃어버린 갱신 (Lost Update)
+entityManager.createNativeQuery("update products set stock = ? where id = ?")
+    .setParameter(1, newStock)
+    .setParameter(2, productId)
+    .executeUpdate();
+```
+
+### FIXED
+
+```java
+// ProductRepository.java — findByIdForUpdate()
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@QueryHints({ @QueryHint(name = "jakarta.persistence.lock.timeout", value = "3000") })
+@Query("select p from Product p where p.id = :id")
+Optional<Product> findByIdForUpdate(@Param("id") Long id);
+```
+
+```java
+// PessimisticStockScenario.java — executeFixedOnce()
+// 재시도 없음 — DB가 대기 후 직렬화를 보장
+Product product = productRepository.findByIdForUpdate(productId).orElseThrow();
+int before = product.getStock();
+if (before < quantity) {
+    return new WorkerOutcome(false, 0, "InsufficientStock", elapsed(t0), before);
+}
+product.decreaseStock(quantity);
+return new WorkerOutcome(true, 0, null, elapsed(t0), product.getStock());
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Product"]} height="380px" fitView />
+
+**Product** 단일 엔티티가 주인공입니다. BAD는 상품 **#3**, FIXED는 상품 **#4**를 사용합니다(같은 row 공유 시 reset·차감이 서로를 덮어써 측정 오염 방지 — 독립된 row로 간섭 배제).
+
+## Bad 쪽에서 벌어지는 일
+
+- Bad 방식은 애플리케이션에서 stock 값을 읽어 계산한 뒤 네이티브 UPDATE를 실행해 경쟁을 재현합니다.
+- 스레드 A: stock = 100 읽음
+- 스레드 B: stock = 100 읽음
+- 스레드 A: stock = 99로 UPDATE 성공
+- 스레드 B: stock = 99로 UPDATE 성공 (A의 갱신을 덮어씀)
+
+두 번 차감이 일어났지만 재고는 한 번만 줄어들었습니다. 이것이 잃어버린 갱신(Lost Update)입니다.
+
+## Fixed 쪽에서 벌어지는 일
+
+**@Lock(PESSIMISTIC_WRITE)**를 선언하면 Hibernate는 아래처럼 SELECT 시점에 쓰기 락을 겁니다.
+
+```sql
+-- Hibernate가 생성
+SELECT ... FROM products WHERE id = ? FOR UPDATE
+```
+
+InnoDB는 해당 row에 배타 락(X-lock)을 걸고, 이 트랜잭션이 커밋 또는 롤백하기 전까지 다른 트랜잭션의 동일 row **SELECT ... FOR UPDATE** 또는 UPDATE가 블로킹 대기합니다.
+따라서 10스레드 동시 실행 시 **재시도 없이도 예외 없이 전부 성공**하며, 실행이 직렬화됩니다.
+
+낙관적 락과의 트레이드오프: 비관적 락은 재시도 비용이 없는 대신 트랜잭션들이 순차 실행되어 총 소요 시간이 스레드 수에 비례해 선형적으로 늘어납니다. 충돌이 잦은 워크로드에서는 재시도를 반복하는 낙관적 락보다 안정적입니다.
+
+**lock_timeout** 쿼리 힌트(3000ms)를 초과하면 **LockTimeoutException**이 발생할 수 있습니다.
+
+## 참고
+
+- [Baeldung — JPA Pessimistic Locking](https://www.baeldung.com/jpa-pessimistic-locking)
+- [Vlad Mihalcea — A beginner's guide to database locking](https://vladmihalcea.com/a-beginners-guide-to-database-locking-and-the-lost-update-phenomena/)

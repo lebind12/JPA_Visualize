@@ -106,6 +106,12 @@ public class DemoSeeder implements ApplicationRunner {
         entityManager.flush();
         entityManager.clear();
 
+        // id=3/4 예약 슬롯 — lock.pessimistic-stock 전용
+        productRepository.save(Product.create("BAD Pessimistic Demo Product",   10000, 100, categories.get(0)));
+        productRepository.save(Product.create("FIXED Pessimistic Demo Product", 10000, 100, categories.get(0)));
+        entityManager.flush();
+        entityManager.clear();
+
         for (int i = 1; i <= 500; i++) {
             Category category = categories.get(random.nextInt(categories.size()));
             int price = 1000 + random.nextInt(99001); // 1000 ~ 100000

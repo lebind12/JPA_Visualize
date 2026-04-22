@@ -1,6 +1,7 @@
 package com.portfolio.jpa.demo.concurrent;
 
 import com.portfolio.jpa.demo.lock.OptimisticStockScenario;
+import com.portfolio.jpa.demo.lock.PessimisticStockScenario;
 import com.portfolio.jpa.demo.lock.WorkerOutcome;
 import com.portfolio.jpa.domain.product.ProductRepository;
 import jakarta.persistence.EntityManager;
@@ -23,6 +24,7 @@ import java.util.concurrent.TimeUnit;
 public class ConcurrentRunner {
 
     private final OptimisticStockScenario optimisticStockScenario;
+    private final PessimisticStockScenario pessimisticStockScenario;
     private final ProductRepository productRepository;
     private final TransactionTemplate transactionTemplate;
 
@@ -70,10 +72,20 @@ public class ConcurrentRunner {
                     long startOffsetMs = (threadStart - globalStart) / 1_000_000;
 
                     WorkerOutcome outcome;
-                    if ("BAD".equals(variant)) {
-                        outcome = optimisticStockScenario.executeBadOnce(productId, quantity);
+                    if ("lock.optimistic-stock".equals(scenarioId)) {
+                        if ("BAD".equals(variant)) {
+                            outcome = optimisticStockScenario.executeBadOnce(productId, quantity);
+                        } else {
+                            outcome = optimisticStockScenario.executeFixedOnce(productId, quantity, maxRetries);
+                        }
+                    } else if ("lock.pessimistic-stock".equals(scenarioId)) {
+                        if ("BAD".equals(variant)) {
+                            outcome = pessimisticStockScenario.executeBadOnce(productId, quantity);
+                        } else {
+                            outcome = pessimisticStockScenario.executeFixedOnce(productId, quantity);
+                        }
                     } else {
-                        outcome = optimisticStockScenario.executeFixedOnce(productId, quantity, maxRetries);
+                        throw new IllegalArgumentException("지원하지 않는 scenarioId: " + scenarioId);
                     }
 
                     rawResults.set(idx, new Object[]{startOffsetMs, outcome});

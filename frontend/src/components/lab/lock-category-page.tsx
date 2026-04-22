@@ -3,8 +3,10 @@ import { useScenarios } from '@/hooks/useScenarios';
 import ScenarioSidebar from '@/components/lab/scenario-sidebar';
 import ScenarioDetail from '@/components/lab/scenario-detail';
 import OptimisticStockDetail from '@/components/lab/optimistic-stock-detail';
+import PessimisticStockDetail from '@/components/lab/pessimistic-stock-detail';
 
 const OPTIMISTIC_STOCK_ID = 'lock.optimistic-stock';
+const PESSIMISTIC_STOCK_ID = 'lock.pessimistic-stock';
 
 export default function LockCategoryPage() {
   const { data: allScenarios, isLoading, error } = useScenarios();
@@ -42,6 +44,10 @@ export default function LockCategoryPage() {
     if (selectedScenario.id === OPTIMISTIC_STOCK_ID) {
       rightContent = (
         <OptimisticStockDetail scenario={selectedScenario} key={selectedScenario.id} />
+      );
+    } else if (selectedScenario.id === PESSIMISTIC_STOCK_ID) {
+      rightContent = (
+        <PessimisticStockDetail scenario={selectedScenario} key={selectedScenario.id} />
       );
     } else {
       rightContent = <ScenarioDetail scenario={selectedScenario} key={selectedScenario.id} />;
