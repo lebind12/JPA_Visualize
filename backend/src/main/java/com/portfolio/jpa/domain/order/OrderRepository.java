@@ -21,4 +21,12 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
             order by o.id asc
             """)
     List<Order> findAllWithGraphByIds(@Param("ids") List<Long> ids);
+
+    @Query("""
+            select distinct o
+            from Order o
+            join fetch o.items
+            order by o.id asc
+            """)
+    List<Order> findAllFetchItems(Pageable pageable);
 }
