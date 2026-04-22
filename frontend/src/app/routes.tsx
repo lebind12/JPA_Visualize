@@ -3,6 +3,7 @@ import RootLayout from '@/app/root-layout'
 import LandingLayout from '@/app/landing-layout'
 import LandingPage from '@/pages/landing'
 import CategoryPage from '@/components/lab/category-page'
+import LockCategoryPage from '@/components/lab/lock-category-page'
 
 function ConcurrencyPlaceholder() {
   return (
@@ -28,6 +29,7 @@ export default function RouterRoot() {
       </Route>
       <Route element={<RootLayout />}>
         <Route path="lab/concurrency" element={<ConcurrencyPlaceholder />} />
+        <Route path="lab/lock" element={<LockCategoryPage />} />
         <Route path="lab/:category" element={<CategoryPage />} />
         <Route path="*" element={<NotFoundPlaceholder />} />
       </Route>

@@ -30,6 +30,9 @@ public class Product extends BaseTimeEntity {
     @Column(nullable = false)
     private int stock;
 
+    @Version
+    private Long version;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "category_id", nullable = false)
     private Category category;

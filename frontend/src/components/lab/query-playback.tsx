@@ -29,12 +29,12 @@ export function QueryPlayback({
   const [speed, setSpeed] = useState<number>(220) // ms per step (기본 220ms)
   const timerRef = useRef<number | null>(null)
 
-  // 재생 루프
+  // 재생 루프 — effect 안에서 setPlaying 직접 호출 금지 → setTimeout 0ms로 마이크로태스크 후 처리
   useEffect(() => {
     if (!playing) return
     if (cursor >= total - 1) {
-      setPlaying(false)
-      return
+      const id = window.setTimeout(() => setPlaying(false), 0)
+      return () => window.clearTimeout(id)
     }
     timerRef.current = window.setTimeout(() => {
       setCursor((c) => c + 1)

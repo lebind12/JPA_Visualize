@@ -1,0 +1,121 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { OptimisticLockTimeline } from '@/components/lab/viz/OptimisticLockTimeline'
+
+## 낙관적 락이란?
+
+트랜잭션이 데이터를 읽을 때 **version** 값을 함께 기억해 두고, UPDATE 시 **WHERE version = 읽은값** 조건을 자동으로 추가하는 방식입니다.
+다른 트랜잭션이 먼저 version을 올렸다면 UPDATE 결과가 0 rows가 되고, Hibernate는 이를 감지해 **OptimisticLockingFailureException**을 던집니다.
+"낙관적"이라는 이름은 충돌이 드물다는 가정에서 비롯됩니다 — 충돌이 드물면 잠금 없이 낙관적으로 진행하고 사후에 감지합니다.
+비교: 비관적 락은 **SELECT ... FOR UPDATE**로 선점해 경쟁 자체를 막습니다. 충돌이 잦으면 비관적, 드물면 낙관적 락이 유리합니다.
+
+## 과정
+
+BAD는 **@Version** 없이 두 트랜잭션이 같은 stock 값을 읽고 동시에 UPDATE해 한 번의 차감이 사라집니다.
+FIXED는 충돌 시 0 rows 매치로 예외를 받아 새 트랜잭션으로 재시도해 정합성을 유지합니다.
+
+<OptimisticLockTimeline />
+
+## 한줄 요약
+
+**@Version** 없는 update는 동시 접근 시 잃어버린 갱신(Lost Update)이 발생하고, **@Version**을 추가하면 Hibernate가 충돌을 **OptimisticLockingFailureException**으로 검출해 재시도로 정합성을 유지합니다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// OptimisticStockScenario.java — executeBadOnce()
+// @Version 없이 read-modify-write 경쟁 재현
+int currentStock = ((Number) entityManager
+    .createNativeQuery("select stock from products where id = ?")
+    .setParameter(1, productId)
+    .getSingleResult()).intValue();
+
+int newStock = currentStock - quantity;
+// 다른 트랜잭션이 같은 stock 값을 읽고 동시에 UPDATE하면
+// 둘 다 성공 → 잃어버린 갱신 (Lost Update)
+entityManager.createNativeQuery("update products set stock = ? where id = ?")
+    .setParameter(1, newStock)
+    .setParameter(2, productId)
+    .executeUpdate();
+```
+
+### FIXED
+
+```java
+// Product.java — @Version 필드
+@Version
+private Long version;   // Hibernate가 UPDATE 시 WHERE version = ? 조건을 자동 추가
+
+// Product.java — decreaseStock()
+public void decreaseStock(int quantity) {
+    if (this.stock < quantity) throw new IllegalStateException("재고 부족");
+    this.stock -= quantity;
+}
+```
+
+```java
+// OptimisticStockScenario.java — executeFixedOnce()
+// 각 시도마다 새 트랜잭션(TransactionTemplate) — 재시도 시 엔티티 재조회
+for (int attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+        transactionTemplate.execute(status -> {
+            Product product = productRepository.findById(productId).orElseThrow();
+            product.decreaseStock(quantity);   // version 자동 비교 UPDATE
+            return ...;
+        });
+        // 성공 → 루프 탈출
+    } catch (OptimisticLockingFailureException e) {
+        retries++;
+        // 다음 attempt 로 재시도
+    }
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Product"]} height="380px" fitView />
+
+**Product** 단일 엔티티가 주인공입니다. **@Version** 필드가 이 엔티티에 추가되어 있으며, 이 시나리오는 다른 엔티티 연관을 사용하지 않습니다.
+
+이 시나리오는 BAD가 상품 **#1**, FIXED가 상품 **#2**를 사용합니다. 같은 row를 공유하면 두 실험이 서로의 reset과 차감을 덮어써 측정이 오염되므로, 독립된 row로 분리해 간섭을 배제합니다.
+
+## Bad 쪽에서 벌어지는 일
+
+- Bad 방식은 애플리케이션에서 stock 값을 읽어 계산한 뒤 UPDATE합니다.
+- 스레드 A: stock = 100 읽음
+- 스레드 B: stock = 100 읽음
+- 스레드 A: stock = 99로 UPDATE 성공
+- 스레드 B: stock = 99로 UPDATE 성공 (A의 갱신을 덮어씀)
+
+두 번 차감이 일어났지만 재고는 한 번만 줄어들었습니다.
+
+## Fixed 쪽에서 벌어지는 일
+
+**@Version** 필드를 선언하면 Hibernate는 UPDATE 시 아래처럼 WHERE 절에 version 조건을 자동으로 추가합니다.
+
+```sql
+UPDATE products
+SET stock = ?, version = version + 1
+WHERE id = ? AND version = ?   -- 읽을 때의 version 값
+```
+
+다른 트랜잭션이 먼저 version을 올렸다면 UPDATE 결과가 0 rows → Hibernate가 **OptimisticLockingFailureException**을 던집니다.
+
+Fixed 방식은 **TransactionTemplate**으로 매 시도마다 새 트랜잭션을 시작합니다. 재시도할 때는 엔티티를 다시 조회해 최신 version 값을 가져오므로 충돌이 없으면 바로 성공합니다.
+
+**maxRetries**를 넘어서면 **MaxRetriesExceeded**를 반환합니다.
+
+낙관적 락은 충돌이 드문 경우(읽기 많고 쓰기 경쟁이 낮음)에 성능이 좋습니다. 반대로 충돌이 잦으면 재시도가 반복되어 처리량이 떨어집니다. 이 경우엔 비관적 락(**SELECT ... FOR UPDATE**)이나 DB 단의 Atomic UPDATE를 고려합니다.
+
+### 스레드 수가 늘수록 벌어지는 일
+
+- 동시 트랜잭션이 많아질수록 매 라운드의 version 충돌 확률이 높아집니다. 5스레드면 1라운드에서 평균 4건 충돌, 20스레드면 19건 충돌 수준으로 늘어납니다.
+- 각 스레드는 최대 **maxRetries**번 재시도하지만, 경쟁이 강해지면 재시도에서도 충돌을 맞는 비율이 올라갑니다. 결과적으로 **재시도 초과 최종 실패 스레드 수가 스레드 총수에 비례해 증가**합니다.
+- UI의 "에러 분포 N회"는 총 충돌 횟수가 아니라 **재시도 초과로 최종 실패한 스레드 수**입니다. 성공 스레드들도 내부에서 각자 재시도를 겪고 있으며, 스레드별 **retries** 값은 hover로 확인할 수 있습니다.
+- 이것이 낙관적 락의 본질적 트레이드오프입니다 — **충돌이 드물 때는 락 오버헤드가 없어 빠르지만, 경쟁이 잦아지면 재시도 비용이 누적**됩니다. 경쟁이 잦은 워크로드에는 비관적 락(다음 시나리오)이 더 적합할 수 있습니다.
+
+## 참고
+
+- [Vlad Mihalcea — Optimistic Locking Version Property JPA](https://vladmihalcea.com/optimistic-locking-version-property-jpa/)
+- [Baeldung — JPA Optimistic Locking](https://www.baeldung.com/jpa-optimistic-locking)

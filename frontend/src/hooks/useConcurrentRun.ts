@@ -1,24 +1,22 @@
 import { useCallback, useRef, useState } from 'react';
-import { runScenario } from '@/api/demo';
-import type { ScenarioRunResponse, Variant } from '@/types/scenario';
+import { runConcurrent } from '@/api/demo';
+import type { ConcurrentRunRequest, ConcurrentRunResponse } from '@/types/concurrent';
 import axios from 'axios';
 
-type ScenarioExtras = Record<string, string | number | boolean | undefined>;
-
-interface UseRunScenarioResult {
-  data: ScenarioRunResponse | null;
+interface UseConcurrentRunResult {
+  data: ConcurrentRunResponse | null;
   isLoading: boolean;
   error: Error | null;
-  run: (id: string, variant: Variant, extras?: ScenarioExtras) => void;
+  run: (scenarioId: string, req: ConcurrentRunRequest) => void;
 }
 
-export function useRunScenario(): UseRunScenarioResult {
-  const [data, setData] = useState<ScenarioRunResponse | null>(null);
+export function useConcurrentRun(): UseConcurrentRunResult {
+  const [data, setData] = useState<ConcurrentRunResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
-  const run = useCallback((id: string, variant: Variant, extras?: ScenarioExtras) => {
+  const run = useCallback((scenarioId: string, req: ConcurrentRunRequest) => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -26,7 +24,7 @@ export function useRunScenario(): UseRunScenarioResult {
     setIsLoading(true);
     setError(null);
 
-    runScenario(id, variant, controller.signal, extras)
+    runConcurrent(scenarioId, req, controller.signal)
       .then((result) => {
         setData(result);
       })

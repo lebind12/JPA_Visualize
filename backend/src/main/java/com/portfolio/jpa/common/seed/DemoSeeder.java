@@ -99,6 +99,13 @@ public class DemoSeeder implements ApplicationRunner {
 
     private List<Product> seedProducts(Random random, List<Category> categories) {
         List<Product> saved = new ArrayList<>();
+
+        // id=1, id=2 예약 슬롯 — BAD/FIXED 시나리오 전용 (TRUNCATE 후 재시드 시 순서 보장)
+        productRepository.save(Product.create("BAD Demo Product",   10000, 100, categories.get(0)));
+        productRepository.save(Product.create("FIXED Demo Product", 10000, 100, categories.get(0)));
+        entityManager.flush();
+        entityManager.clear();
+
         for (int i = 1; i <= 500; i++) {
             Category category = categories.get(random.nextInt(categories.size()));
             int price = 1000 + random.nextInt(99001); // 1000 ~ 100000

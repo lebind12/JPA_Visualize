@@ -1,23 +1,26 @@
-import { lazy, Suspense, useMemo, type ComponentType } from 'react'
+import { lazy, Suspense, type ComponentType } from 'react'
 
 type MdxModule = { default: ComponentType<Record<string, unknown>> }
 type MdxLoader = () => Promise<MdxModule>
 
 const mdxModules = import.meta.glob('/src/content/scenarios/*.mdx') as Record<string, MdxLoader>
 
-function resolveMdx(scenarioId: string): ComponentType | null {
-  const path = `/src/content/scenarios/${scenarioId}.mdx`
-  const loader = mdxModules[path]
-  if (!loader) return null
-  return lazy(loader) as unknown as ComponentType
-}
+// 모듈 레벨에서 모든 MDX를 lazy로 미리 등록 — 렌더 중 lazy() 호출 금지 규칙 준수
+const lazyMdxMap: Record<string, ComponentType> = Object.fromEntries(
+  Object.entries(mdxModules).map(([path, loader]) => {
+    // path 예: /src/content/scenarios/nplus1.order-list.mdx
+    const match = path.match(/\/([^/]+)\.mdx$/)
+    const id = match ? match[1] : path
+    return [id, lazy(loader as MdxLoader) as unknown as ComponentType]
+  }),
+)
 
 interface ExplanationSectionProps {
   scenarioId: string
 }
 
 export function ExplanationSection({ scenarioId }: ExplanationSectionProps) {
-  const MDXComponent = useMemo(() => resolveMdx(scenarioId), [scenarioId])
+  const MDXComponent: ComponentType | undefined = lazyMdxMap[scenarioId]
 
   if (!MDXComponent) {
     return null
