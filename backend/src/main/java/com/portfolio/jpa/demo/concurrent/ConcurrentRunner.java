@@ -1,5 +1,6 @@
 package com.portfolio.jpa.demo.concurrent;
 
+import com.portfolio.jpa.demo.lock.DeadlockScenario;
 import com.portfolio.jpa.demo.lock.OptimisticStockScenario;
 import com.portfolio.jpa.demo.lock.PessimisticStockScenario;
 import com.portfolio.jpa.demo.lock.WorkerOutcome;
@@ -7,8 +8,10 @@ import com.portfolio.jpa.domain.product.ProductRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -25,6 +28,7 @@ public class ConcurrentRunner {
 
     private final OptimisticStockScenario optimisticStockScenario;
     private final PessimisticStockScenario pessimisticStockScenario;
+    private final DeadlockScenario deadlockScenario;
     private final ProductRepository productRepository;
     private final TransactionTemplate transactionTemplate;
 
@@ -38,22 +42,29 @@ public class ConcurrentRunner {
         int quantity = req.quantity();
         int maxRetries = req.maxRetries() != null ? req.maxRetries() : 3;
 
+        boolean isDeadlock = "lock.deadlock".equals(scenarioId);
+
+        if (isDeadlock && req.productIdB() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "lock.deadlock 시나리오는 productIdB가 필요합니다.");
+        }
+        long productIdB = isDeadlock ? req.productIdB() : 0L;
+
         // 재고 리셋
         if (req.resetStockTo() != null) {
             int stockTo = req.resetStockTo();
-            transactionTemplate.execute(status -> {
-                entityManager.createNativeQuery(
-                        "update products set stock = :stock, version = version + 1 where id = :id")
-                        .setParameter("stock", stockTo)
-                        .setParameter("id", productId)
-                        .executeUpdate();
-                return null;
-            });
+            resetOne(productId, stockTo);
+            if (isDeadlock) {
+                resetOne(productIdB, stockTo);
+            }
         }
 
         int stockBefore = productRepository.findById(productId)
                 .map(p -> p.getStock())
                 .orElseThrow();
+
+        int stockBeforeB = isDeadlock
+                ? productRepository.findById(productIdB).map(p -> p.getStock()).orElse(-1)
+                : -1;
 
         List<Object[]> rawResults = new ArrayList<>();
         for (int i = 0; i < threads; i++) rawResults.add(null);
@@ -72,22 +83,36 @@ public class ConcurrentRunner {
                     long startOffsetMs = (threadStart - globalStart) / 1_000_000;
 
                     WorkerOutcome outcome;
-                    if ("lock.optimistic-stock".equals(scenarioId)) {
-                        if ("BAD".equals(variant)) {
-                            outcome = optimisticStockScenario.executeBadOnce(productId, quantity);
+                    try {
+                        if ("lock.optimistic-stock".equals(scenarioId)) {
+                            if ("BAD".equals(variant)) {
+                                outcome = optimisticStockScenario.executeBadOnce(productId, quantity);
+                            } else {
+                                outcome = optimisticStockScenario.executeFixedOnce(productId, quantity, maxRetries);
+                            }
+                        } else if ("lock.pessimistic-stock".equals(scenarioId)) {
+                            if ("BAD".equals(variant)) {
+                                outcome = pessimisticStockScenario.executeBadOnce(productId, quantity);
+                            } else {
+                                outcome = pessimisticStockScenario.executeFixedOnce(productId, quantity);
+                            }
+                        } else if ("lock.deadlock".equals(scenarioId)) {
+                            if ("BAD".equals(variant)) {
+                                outcome = deadlockScenario.executeBadOnce(productId, productIdB, quantity, idx);
+                            } else {
+                                outcome = deadlockScenario.executeFixedOnce(productId, productIdB, quantity, idx);
+                            }
                         } else {
-                            outcome = optimisticStockScenario.executeFixedOnce(productId, quantity, maxRetries);
+                            throw new IllegalArgumentException("지원하지 않는 scenarioId: " + scenarioId);
                         }
-                    } else if ("lock.pessimistic-stock".equals(scenarioId)) {
-                        if ("BAD".equals(variant)) {
-                            outcome = pessimisticStockScenario.executeBadOnce(productId, quantity);
-                        } else {
-                            outcome = pessimisticStockScenario.executeFixedOnce(productId, quantity);
-                        }
-                    } else {
-                        throw new IllegalArgumentException("지원하지 않는 scenarioId: " + scenarioId);
+                    } catch (Throwable t) {
+                        // 커밋 단계 escape 등 모든 예외 안전망 — rawResults.set이 반드시 호출되도록 보장
+                        String msg = t.getMessage();
+                        String errorType = (msg != null && (msg.contains("deadlock") || msg.contains("Deadlock")))
+                                ? "DeadlockLoser"
+                                : t.getClass().getSimpleName();
+                        outcome = new WorkerOutcome(false, 0, errorType, 0L, -1);
                     }
-
                     rawResults.set(idx, new Object[]{startOffsetMs, outcome});
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
@@ -154,11 +179,35 @@ public class ConcurrentRunner {
                 .map(e -> new ConcurrentRunResponse.ErrorBucket(e.getKey(), e.getValue()))
                 .toList();
 
+        List<String> notes;
+        if (isDeadlock) {
+            int stockAfterB = productRepository.findById(productIdB)
+                    .map(p -> p.getStock())
+                    .orElse(-1);
+            notes = List.of(
+                    "stockBeforeB=" + stockBeforeB,
+                    "stockAfterB=" + stockAfterB
+            );
+        } else {
+            notes = List.of();
+        }
+
         return new ConcurrentRunResponse(
                 scenarioId, variant, threads, quantity,
                 totalMs, succeeded, failed,
                 stockBefore, stockAfter, expectedStockAfter,
-                runs, errors
+                runs, errors, notes
         );
+    }
+
+    private void resetOne(long productId, int stockTo) {
+        transactionTemplate.execute(status -> {
+            entityManager.createNativeQuery(
+                    "update products set stock = :stock, version = version + 1 where id = :id")
+                    .setParameter("stock", stockTo)
+                    .setParameter("id", productId)
+                    .executeUpdate();
+            return null;
+        });
     }
 }

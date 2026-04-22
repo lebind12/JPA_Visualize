@@ -112,6 +112,18 @@ public class DemoSeeder implements ApplicationRunner {
         entityManager.flush();
         entityManager.clear();
 
+        // id=5/6 예약 슬롯 — lock.deadlock BAD 전용
+        productRepository.save(Product.create("BAD Deadlock A Demo Product", 10000, 100, categories.get(0)));
+        productRepository.save(Product.create("BAD Deadlock B Demo Product", 10000, 100, categories.get(0)));
+        entityManager.flush();
+        entityManager.clear();
+
+        // id=7/8 예약 슬롯 — lock.deadlock FIXED 전용
+        productRepository.save(Product.create("FIXED Deadlock A Demo Product", 10000, 100, categories.get(0)));
+        productRepository.save(Product.create("FIXED Deadlock B Demo Product", 10000, 100, categories.get(0)));
+        entityManager.flush();
+        entityManager.clear();
+
         for (int i = 1; i <= 500; i++) {
             Category category = categories.get(random.nextInt(categories.size()));
             int price = 1000 + random.nextInt(99001); // 1000 ~ 100000

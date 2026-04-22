@@ -5,6 +5,7 @@ export interface ConcurrentRunRequest {
   quantity: number;
   maxRetries?: number;
   resetStockTo?: number;
+  productIdB?: number;
 }
 
 export interface RunRecord {
@@ -34,4 +35,5 @@ export interface ConcurrentRunResponse {
   expectedStockAfter: number;
   runs: RunRecord[];
   errors: ErrorBucket[];
+  notes?: string[];
 }

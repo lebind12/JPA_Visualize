@@ -4,9 +4,11 @@ import ScenarioSidebar from '@/components/lab/scenario-sidebar';
 import ScenarioDetail from '@/components/lab/scenario-detail';
 import OptimisticStockDetail from '@/components/lab/optimistic-stock-detail';
 import PessimisticStockDetail from '@/components/lab/pessimistic-stock-detail';
+import DeadlockDetail from '@/components/lab/deadlock-detail';
 
 const OPTIMISTIC_STOCK_ID = 'lock.optimistic-stock';
 const PESSIMISTIC_STOCK_ID = 'lock.pessimistic-stock';
+const DEADLOCK_ID = 'lock.deadlock';
 
 export default function LockCategoryPage() {
   const { data: allScenarios, isLoading, error } = useScenarios();
@@ -48,6 +50,10 @@ export default function LockCategoryPage() {
     } else if (selectedScenario.id === PESSIMISTIC_STOCK_ID) {
       rightContent = (
         <PessimisticStockDetail scenario={selectedScenario} key={selectedScenario.id} />
+      );
+    } else if (selectedScenario.id === DEADLOCK_ID) {
+      rightContent = (
+        <DeadlockDetail scenario={selectedScenario} key={selectedScenario.id} />
       );
     } else {
       rightContent = <ScenarioDetail scenario={selectedScenario} key={selectedScenario.id} />;

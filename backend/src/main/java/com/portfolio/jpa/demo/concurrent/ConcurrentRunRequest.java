@@ -6,5 +6,6 @@ public record ConcurrentRunRequest(
         long productId,
         int quantity,
         Integer maxRetries,
-        Integer resetStockTo
+        Integer resetStockTo,
+        Long productIdB
 ) {}

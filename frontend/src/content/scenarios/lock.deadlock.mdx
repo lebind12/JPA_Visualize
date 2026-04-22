@@ -1,0 +1,87 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { DeadlockTimeline } from '@/components/lab/viz/DeadlockTimeline'
+
+## 데드락이란?
+
+두 트랜잭션이 서로 상대방이 보유한 락을 기다리며 영원히 진행하지 못하는 상태를 데드락(Deadlock)이라 합니다.
+InnoDB는 lock wait cycle을 자동 감지해 **victim** 트랜잭션을 rollback시키고 나머지를 풀어 줍니다.
+비관적 락은 row를 선점하는 강력한 도구이지만, 여러 row를 동시에 잠글 때 획득 순서가 다르면 cycle이 형성됩니다. 낙관적 락은 SELECT FOR UPDATE 자체를 쓰지 않아 이 문제와 무관합니다.
+
+## 과정
+
+T1이 A → B 순서로 락을 획득하고, T2가 B → A 순서로 진행하면 서로 대기가 걸려 cycle이 완성됩니다.
+FIXED는 모든 트랜잭션이 **id 오름차순**으로 락을 획득해 cycle 자체가 형성되지 않습니다.
+
+<DeadlockTimeline />
+
+## 한줄 요약
+
+여러 row에 락을 걸 때는 **항상 동일한 순서(예: id 오름차순)**로 획득해 cycle을 원천 차단한다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// DeadlockScenario.java — executeBadOnce()
+// threadIndex 짝수 → A, B 순서 / 홀수 → B, A 순서 (역순 교대로 cycle 유발)
+long first  = (threadIndex % 2 == 0) ? productIdA : productIdB;
+long second = (threadIndex % 2 == 0) ? productIdB : productIdA;
+
+Product productFirst  = productRepository.findByIdForUpdate(first).orElseThrow();
+productFirst.decreaseStock(quantity);
+
+Product productSecond = productRepository.findByIdForUpdate(second).orElseThrow();
+productSecond.decreaseStock(quantity);
+
+// catch: DeadlockLoserDataAccessException | CannotAcquireLockException
+//        PessimisticLockException | LockTimeoutException
+//        → 모두 "DeadlockLoser"로 통일
+```
+
+### FIXED
+
+```java
+// DeadlockScenario.java — executeFixedOnce()
+// 항상 id 오름차순으로 정렬해 획득 → cycle 불가
+long first  = Math.min(productIdA, productIdB);
+long second = Math.max(productIdA, productIdB);
+
+Product productFirst  = productRepository.findByIdForUpdate(first).orElseThrow();
+productFirst.decreaseStock(quantity);
+
+Product productSecond = productRepository.findByIdForUpdate(second).orElseThrow();
+productSecond.decreaseStock(quantity);
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Product"]} height="380px" fitView />
+
+**Product** 단일 엔티티가 주인공입니다. BAD는 상품 **#5/#6**, FIXED는 상품 **#7/#8**을 사용합니다(독립된 row로 간섭 배제).
+
+## Bad 쪽에서 벌어지는 일
+
+- T1(짝수 스레드)는 A → B 순서로 **SELECT ... FOR UPDATE** 시도.
+- T2(홀수 스레드)는 B → A 순서로 **SELECT ... FOR UPDATE** 시도.
+- T1이 A를 점유한 상태에서 B를 대기하고, T2가 B를 점유한 상태에서 A를 대기하면 cycle 완성.
+- InnoDB가 cycle을 탐지해 victim(주로 T2)에 **CannotAcquireLockException** 또는 **DeadlockLoserDataAccessException**을 던지며 rollback.
+- 결과: T2 실패, T1만 커밋. 재시도 정책이 없으면 일부 트랜잭션이 유실됩니다.
+
+## Fixed 쪽에서 벌어지는 일
+
+모든 스레드가 **Math.min(a, b)** 먼저, **Math.max(a, b)** 나중으로 동일한 순서로 락을 획득합니다. cycle이 형성될 수 없어 데드락이 원천 차단됩니다.
+
+```sql
+-- FIXED: 항상 먼저 min(id), 그 다음 max(id)
+SELECT ... FROM products WHERE id = 7 FOR UPDATE;
+SELECT ... FROM products WHERE id = 8 FOR UPDATE;
+```
+
+T2는 T1이 락을 해제할 때까지 대기 후 획득해 직렬 실행됩니다. 재시도 없이도 전원 성공합니다.
+
+## 참고
+
+- [MySQL InnoDB Deadlock Detection — 공식 문서](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlock-detection.html)
+- [Vlad Mihalcea — How to Prevent Database Deadlocks](https://vladmihalcea.com/database-deadlock/)
+- [Baeldung — Deadlock and Starvation in Java](https://www.baeldung.com/cs/deadlock-livelock-starvation)

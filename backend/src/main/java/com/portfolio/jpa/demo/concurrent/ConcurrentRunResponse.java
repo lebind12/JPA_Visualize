@@ -14,7 +14,8 @@ public record ConcurrentRunResponse(
         int stockAfter,
         int expectedStockAfter,
         List<RunRecord> runs,
-        List<ErrorBucket> errors
+        List<ErrorBucket> errors,
+        List<String> notes
 ) {
     public record RunRecord(
             int threadIdx,
