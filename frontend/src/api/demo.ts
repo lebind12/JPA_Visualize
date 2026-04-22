@@ -12,8 +12,9 @@ export function runScenario(
   variant: Variant,
   signal?: AbortSignal,
 ): Promise<ScenarioRunResponse> {
+  const path = id.replaceAll('.', '/');
   return client
-    .get<ScenarioRunResponse>(`/demo/${id}`, {
+    .get<ScenarioRunResponse>(`/demo/${path}`, {
       params: { variant },
       signal,
     })
