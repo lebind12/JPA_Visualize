@@ -33,6 +33,19 @@ cd backend && ./gradlew bootRun
 cd frontend && npm run dev
 ```
 
+### 사용자가 띄워둔 개발 프로세스는 절대 건드리지 않는다
+사용자는 옵저빙 목적으로 다음 프로세스를 **직접 관리**한다. 에이전트·메인 어시스턴트는 이들을 **kill·재시작·대체 기동하지 않는다**.
+
+- `./gradlew bootRun` (Spring Boot, 포트 18080) — DevTools가 붙어 있어 classpath 변경을 감지해 자동 재시작.
+- `./gradlew -t classes` (백엔드 continuous compile) — 소스 저장 시 자동 재컴파일.
+- `npm run dev` (Vite, 포트 15173) — HMR 자동 반영.
+
+**에이전트 규칙**
+- 빌드 검증은 단발성 명령만: `./gradlew compileJava`, `./gradlew build`, `npm run build`, `npm run lint`. `bootRun`·`-t classes`·`npm run dev`를 새로 띄우지 말 것.
+- 18080/15173/23306 포트 점유 프로세스를 `kill`·`lsof`로 찾아 종료하지 말 것.
+- curl 등 런타임 검증은 "이미 떠 있으면 그 인스턴스에 대고" 수행. 없으면 사용자에게 "백엔드 기동 후 재검증 요청"으로 보고하고 멈춘다.
+- DB 기동(`docker compose … up -d`)은 예외적으로 허용 (DB는 사용자가 수동 관리하지 않음).
+
 ### DB 쿼리는 컨테이너 안에서 실행한다
 호스트에 mysql 클라이언트가 없을 수 있고, 있어도 일관성을 위해 **반드시 컨테이너 안**에서 돌린다.
 호스트의 `mysql`/`mysqladmin` 직접 호출은 PreToolUse 훅(`.claude/hooks/block-host-mysql.sh`)이 차단한다.

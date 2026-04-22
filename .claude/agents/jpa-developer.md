@@ -20,6 +20,11 @@ model: sonnet
    - 백엔드 변경: `./gradlew compileJava` (최소) 또는 `./gradlew test --tests …`
    - 프론트 변경: `npm run build` 또는 관련 컴포넌트 타입 체크
    - 검증이 실패하면 **실패 상태로 보고**한다. 실패를 숨기거나 "대체로 되는 것 같다"로 넘기지 말 것.
+5. **사용자가 수동 관리하는 개발 프로세스를 건드리지 않는다.**
+   - `./gradlew bootRun`, `./gradlew -t classes`, `npm run dev`는 **사용자가 띄워둔다**. 새로 기동하지 말 것. 이미 떠 있는 것을 `kill`·`lsof`로 종료하지 말 것.
+   - 빌드 검증은 단발성(`compileJava`/`build`/`npm run build`)만.
+   - 런타임(curl) 검증은 "떠 있으면 그 인스턴스에 대고" 수행. 18080이 죽어 있으면 시도하지 말고 "사용자 측 백엔드 기동 후 재검증 요청"으로 FAIL 보고.
+   - DB(`docker compose … up -d`)는 예외 — 필요 시 기동·ping 가능.
 
 ## 입력 지시서가 갖춰야 할 것 (없으면 구현 전 질문)
 - 목표 1줄
@@ -58,3 +63,4 @@ model: sonnet
 - 커밋 메시지 영어, Co-Authored-By 추가
 - 지시 없이 README·주석·TODO 대량 추가
 - 검증 생략
+- **사용자가 옵저빙용으로 띄워둔 `bootRun`/`-t classes`/`npm run dev`를 `kill`하거나 새로 띄우기**
