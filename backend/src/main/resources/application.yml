@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: jpa-portfolio
+  profiles:
+    default: local
+  datasource:
+    url: jdbc:mysql://localhost:23306/jpa_portfolio?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Seoul&allowPublicKeyRetrieval=true&useSSL=false
+    username: jpa
+    password: jpa_password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        format_sql: true
+        default_batch_fetch_size: 100
+        # statement_inspector: Phase 3에서 SqlCaptureInspector 클래스 추가 후 활성화
+        # session_factory:
+        #   statement_inspector: com.portfolio.jpa.common.metrics.SqlCaptureInspector
+
+server:
+  port: 8080
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
