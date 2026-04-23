@@ -1,0 +1,111 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { SelfInvocationFlow } from '@/components/lab/viz/SelfInvocationFlow'
+
+## 자기 호출(Self-Invocation)이란?
+
+Spring의 **@Transactional**은 AOP 프록시 기반으로 동작합니다. 빈을 주입받을 때 Spring은 원본 객체 대신 프록시 객체를 건네주고, 외부에서 메서드를 호출하면 프록시가 먼저 어드바이스(트랜잭션 시작/커밋/롤백)를 수행한 뒤 실제 메서드로 위임합니다.
+그러나 같은 클래스 안에서 **this.someMethod()**로 직접 호출하면 프록시를 거치지 않고 원본 객체의 메서드가 바로 실행됩니다. 어드바이스가 끼어들 여지가 없으므로 **@Transactional**은 통째로 무시됩니다.
+결과적으로 새 트랜잭션(REQUIRES_NEW)이 열리지 않아 바깥 트랜잭션이 없으면 내부 메서드는 트랜잭션 없이 실행됩니다. 이때 **saveAndFlush** 같은 Spring Data JPA 쓰기 메서드를 부르면 그 메서드 자체가 가진 **@Transactional**이 자기 짧은 트랜잭션을 열고 단독 커밋해버려, 이후 예외가 나도 되돌릴 수 없습니다.
+
+## 과정
+
+<SelfInvocationFlow />
+
+1. 클라이언트가 **runBad()** 호출 → 이 메서드에 **@Transactional**이 없으므로 트랜잭션 없이 진입.
+2. 내부에서 **this.innerBad()** 호출 → 프록시를 우회, **@Transactional(REQUIRES_NEW)** 어드바이스 미적용(= 새 트랜잭션 열리지 않음).
+3. **order.markCompleted()** 후 **orderRepository.saveAndFlush(order)** 실행 → **save**의 자체 **@Transactional**이 짧은 트랜잭션을 열어 UPDATE를 커밋하고 닫는다.
+4. 직후 **IllegalStateException** 발생 → 되돌릴 대상이 이미 없음(짧은 TX는 이미 커밋 완료).
+5. 예외는 **runBad**의 try-catch로 잡히고, DB에는 **COMPLETED**가 남는다.
+
+## 한줄 요약
+
+**this.method()** 호출은 프록시를 거치지 않아 **@Transactional**이 통째로 무시된다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// SelfInvocationScenario.java
+// outerBad 는 @Transactional 없음 — 내부에서 this.innerBad() 호출
+public Map<String, Object> runBad(long orderId) {
+    try {
+        this.innerBad(orderId);   // ← 프록시 우회
+    } catch (Exception e) { ... }
+    ...
+}
+
+// @Transactional(REQUIRES_NEW) 선언이 있지만 this 호출이므로 무시됨
+@Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = RuntimeException.class)
+public void innerBad(long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.markCompleted();
+    orderRepository.saveAndFlush(order);   // 프록시 우회 → 자체 짧은 트랜잭션으로 즉시 커밋
+    throw new IllegalStateException("self-invocation demo");
+}
+// 결과: 예외에도 불구하고 Order.status == COMPLETED 가 DB에 남음
+```
+
+### FIXED
+
+```java
+// SelfInvocationScenario.java — SELF_INJECT 전략
+// @Lazy 자가 주입으로 프록시 경유 보장 (순환 참조 방지용 @Lazy 필수)
+@Lazy
+@Autowired
+private SelfInvocationScenario self;
+
+public Map<String, Object> runFixed(long orderId, String strategy) {
+    // SELF_INJECT: self 는 프록시 → @Transactional(REQUIRES_NEW) 정상 적용
+    self.innerFixed(orderId);
+
+    // AOP_CONTEXT: AopContext.currentProxy() 로 현재 프록시 획득
+    // → ((SelfInvocationScenario) AopContext.currentProxy()).innerFixed(orderId);
+    // @EnableAspectJAutoProxy(exposeProxy = true) 가 Application 클래스에 필요
+
+    // SEPARATE_BEAN: 별도 서비스 빈으로 분리
+    // → innerService.innerFixed(orderId);
+}
+
+// innerFixed 도 동일 로직 — 프록시 경유 시 REQUIRES_NEW 트랜잭션 정상 적용 → 예외 시 롤백
+@Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = RuntimeException.class)
+public void innerFixed(long orderId) {
+    Order order = orderRepository.findById(orderId).orElseThrow();
+    order.markCompleted();
+    orderRepository.saveAndFlush(order);   // 프록시 경유 → 바깥 REQUIRES_NEW 트랜잭션에 합류
+    throw new IllegalStateException("self-invocation demo");
+}
+// 결과: 예외 발생 → 새 트랜잭션 롤백 → Order.status == PENDING 유지
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Order"]} height="380px" fitView />
+
+**Order** 엔티티의 상태(**status**)가 관찰 포인트입니다. BAD는 예외 후에도 COMPLETED가 남고, FIXED는 롤백되어 PENDING이 유지됩니다.
+
+## Bad 쪽에서 벌어지는 일
+
+- **runBad**는 **@Transactional**이 없으므로 트랜잭션 없이 실행.
+- **this.innerBad()** 호출은 Spring 프록시를 거치지 않아 **@Transactional(REQUIRES_NEW)** 어드바이스가 끼어들지 못함 → 새 트랜잭션이 **열리지 않음**.
+- 이 상태에서 **orderRepository.saveAndFlush(order)** 를 부르면 **Spring Data JPA의 save 메서드 자체에 선언된 @Transactional**이 자기 짧은 트랜잭션을 열고 UPDATE를 커밋하고 닫는다.
+- 직후 **IllegalStateException** 발생 — 이미 커밋된 뒤라 롤백 대상이 없음.
+- 결과: **orderStatusAfter == "COMPLETED"**, **exceptionCaught == "IllegalStateException"**.
+- 만약 **saveAndFlush** 호출이 없었다면 트랜잭션이 없어 dirty checking도 발동하지 않고, DB에는 아무 변화가 일어나지 않는다. 드라마가 성립하는 전제가 바로 "명시적 쓰기 메서드 호출"이다.
+
+## Fixed 쪽에서 벌어지는 일
+
+세 전략 모두 프록시를 경유해 **@Transactional(REQUIRES_NEW)** 이 정상 적용되고, 예외 발생 시 새 트랜잭션이 롤백됩니다.
+
+| 전략 | 방법 | 핵심 조건 |
+|---|---|---|
+| **SELF_INJECT** | **@Lazy** 로 자기 자신을 주입받아 **self.innerFixed()** 호출 | **@Lazy** 없으면 순환 참조 에러 |
+| **AOP_CONTEXT** | **AopContext.currentProxy()** 로 현재 프록시 획득 후 캐스팅 호출 | **@EnableAspectJAutoProxy(exposeProxy = true)** 필수 |
+| **SEPARATE_BEAN** | 내부 로직을 별도 **@Service** 빈(**SelfInvocationInnerService**)으로 분리 | 가장 안전하고 명시적인 방법 |
+
+결과: 예외 발생 → REQUIRES_NEW 트랜잭션 롤백 → **orderStatusAfter == "PENDING"**.
+
+## 참고
+
+- [Spring 공식 문서 — Understanding the Spring Framework's Declarative Transaction Implementation](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-decl-explained.html)
+- [Baeldung — Self-Invocation in Spring](https://www.baeldung.com/spring-self-injection)

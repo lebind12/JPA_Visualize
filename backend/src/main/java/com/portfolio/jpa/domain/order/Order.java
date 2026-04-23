@@ -67,6 +67,14 @@ public class Order extends BaseTimeEntity {
         item.assignOrder(this);
     }
 
+    public void markCompleted() {
+        this.status = OrderStatus.COMPLETED;
+    }
+
+    public void resetToPending() {
+        this.status = OrderStatus.PENDING;
+    }
+
     public void complete() {
         this.status = OrderStatus.COMPLETED;
     }
