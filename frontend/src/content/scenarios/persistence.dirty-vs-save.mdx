@@ -1,0 +1,127 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## save() 남용 vs Dirty Checking이란?
+
+Spring Data JPA의 **SimpleJpaRepository.save(entity)**는 내부에서 **isNew** 판정을 수행한다.
+엔티티에 ID가 이미 있으면 **isNew=false**로 판정되어 **em.persist()** 대신 **em.merge()** 경로를 탄다.
+
+**em.merge()**는 다음과 같이 동작한다.
+
+1. 전달된 detached 인스턴스를 그대로 영속 컨텍스트에 붙이지 않는다.
+2. DB에서 동일 ID의 상태를 **SELECT로 먼저 로드**한다.
+3. 로드된 managed 인스턴스에 detached의 값을 복사한 뒤, **새로운 managed 인스턴스**를 반환한다.
+4. 원본 detached 인스턴스와 반환된 managed 인스턴스는 **서로 다른 객체**다.
+
+반면, **@Transactional** 안에서 **findById()** 등으로 조회한 엔티티는 already-managed 상태다.
+해당 엔티티의 필드를 바꾸기만 하면 트랜잭션 커밋 시 **dirty checking**이 변경을 감지하고 **UPDATE**를 자동 발행한다.
+별도의 **save()** 호출이 필요 없다.
+
+## 과정
+
+**BAD 흐름**
+
+1. 별도 **@Transactional(readOnly=true)** 메서드에서 Member를 조회한 뒤 반환 → TX 종료 → **detached** 상태
+2. **@Transactional** 메서드 진입 → detached 인스턴스의 **renameTo()** 호출 (아직 영속 컨텍스트와 무관)
+3. **memberRepository.save(detached)** 호출 → **SimpleJpaRepository**가 **isNew=false** 판정 → **em.merge(detached)** 실행
+4. Hibernate가 merge 대상 상태 로드를 위한 **SELECT** 발행 후 managed 복제본 반환
+5. 커밋 시 **UPDATE** 발행 → sqlLog에 **SELECT + UPDATE** 모두 포함
+
+**FIXED 흐름**
+
+1. **@Transactional** 메서드 진입
+2. **findById(memberId)** 로 managed 엔티티 확보 → **SELECT** 1회
+3. **renameTo()** 로 필드만 변경, **save()** 호출 없음
+4. 커밋 시 dirty checking이 변경 감지 → **UPDATE** 1회 자동 발행
+5. sqlLog에 **SELECT + UPDATE** 정확히 2건
+
+## 한줄 요약
+
+**dirty checking**은 @Transactional 안에서 엔티티 필드만 바꾸면 커밋 시 자동으로 UPDATE를 발행한다. 명시적 **save()** 호출은 **em.merge()** 경로를 유발해 불필요한 SELECT와 managed 복제본을 만들 뿐이다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// backend/src/main/java/com/portfolio/jpa/demo/persistence/DirtyVsSaveScenario.java
+@DemoRun
+@Transactional
+public Map<String, Object> runBad(Member detached) {
+    String nameBefore = detached.getName();
+    detached.renameTo(nameBefore + " (modified-BAD)");
+
+    // detached 상태에서 save → em.merge → 사전 SELECT 발행
+    Member returnedByMerge = memberRepository.save(detached);
+
+    Map<String, Object> result = new LinkedHashMap<>();
+    result.put("strategy", "EXPLICIT_SAVE_MERGE");
+    result.put("saveCalled", true);
+    result.put("mergeReturnedDifferentInstance", returnedByMerge != detached);
+    ...
+    return result;
+}
+```
+
+### FIXED
+
+```java
+// backend/src/main/java/com/portfolio/jpa/demo/persistence/DirtyVsSaveScenario.java
+@DemoRun
+@Transactional
+public Map<String, Object> runFixed(long memberId) {
+    // findById → managed 상태
+    Member managed = memberRepository.findById(memberId).orElseThrow();
+    String nameBefore = managed.getName();
+
+    // 필드만 변경, save() 호출 없음
+    managed.renameTo(nameBefore + " (modified-FIXED)");
+
+    Map<String, Object> result = new LinkedHashMap<>();
+    result.put("strategy", "DIRTY_CHECKING_ONLY");
+    result.put("saveCalled", false);
+    ...
+    return result;
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Member"]} height="380px" fitView />
+
+**Member.name** 필드가 BAD/FIXED 두 경로에서 각각 어떻게 UPDATE되는지 관찰한다.
+
+## Bad 쪽에서 벌어지는 일
+
+**SimpleJpaRepository.save()** 내부는 다음과 같다.
+
+```java
+// SimpleJpaRepository (Spring Data JPA 내부)
+public <S extends T> S save(S entity) {
+    if (entityInformation.isNew(entity)) {
+        em.persist(entity);
+        return entity;
+    } else {
+        return em.merge(entity);  // ← ID가 있으면 여기
+    }
+}
+```
+
+- **isNew** 판정: ID 필드가 null이 아니면 false → **em.merge** 경로
+- **em.merge** 는 detached 원본을 그대로 영속화하지 않고 DB에서 현재 상태를 **SELECT**로 먼저 로드
+- 로드한 뒤 detached의 값을 복사한 **새 managed 인스턴스**를 반환
+- **mergeReturnedDifferentInstance=true** 는 이 현상을 직접 관찰한 결과다
+- 원본 detached에 이후 **renameTo()** 를 호출해도 반영되지 않는다는 점이 버그 유발 지점
+- sqlLog에서 **select members** 가 포함된 줄을 확인하면 merge 사전 로드를 확인할 수 있다
+
+## Fixed 쪽에서 벌어지는 일
+
+- **findById()** 로 조회한 엔티티는 현재 영속 컨텍스트에서 **managed** 상태
+- Hibernate는 flush 시점(커밋 직전)에 managed 엔티티의 스냅샷과 현재 상태를 비교
+- **renameTo()** 로 name이 바뀐 것을 dirty checking이 감지 → **UPDATE** 자동 발행
+- **save()** 를 호출하지 않아 em.merge 경로를 완전히 우회
+- sqlLog에는 findById의 **SELECT** 1건과 커밋 시 **UPDATE** 1건, 총 2건만 나타난다
+
+## 참고
+
+- [Spring Data JPA — SimpleJpaRepository.save](https://docs.spring.io/spring-data/jpa/reference/jpa/entity-persistence.html#jpa.entity-persistence.saving-entites)
+- [Hibernate User Guide — merge()](https://docs.jboss.org/hibernate/orm/current/userguide/html_single/Hibernate_User_Guide.html#pc-merge)
