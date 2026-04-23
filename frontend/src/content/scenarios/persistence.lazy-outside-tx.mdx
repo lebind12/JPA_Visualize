@@ -1,0 +1,117 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 트랜잭션 밖 LAZY 접근이란?
+
+JPA 엔티티의 연관 필드는 기본적으로 **LAZY** 로딩으로 선언된다. LAZY 필드는 처음 접근하는 순간 Hibernate가 추가 SELECT를 날리는데, 이를 위해선 **열린 세션(Persistence Context)** 이 반드시 살아 있어야 한다.
+
+**OSIV(Open Session In View)** 가 꺼진 환경(**spring.jpa.open-in-view: false**)에서는, 세션의 생명주기가 **@Transactional 경계**와 정확히 일치한다. 트랜잭션이 끝나는 순간 세션이 닫히고, 그 이후에 LAZY 프록시를 건드리면 Hibernate는 초기화 수단이 없어 **LazyInitializationException** 을 던진다.
+
+문제는 이 패턴이 일상적으로 발생한다는 것이다. 서비스 메서드가 엔티티를 반환(return order;)하고 컨트롤러나 JSON 직렬화 단계에서 연관 필드를 읽으면 정확히 이 상황이 된다.
+
+## 과정
+
+**BAD**
+
+1. 컨트롤러가 `/api/demo/persistence/lazy-outside-tx?variant=BAD` 요청을 받는다.
+2. 서비스의 **@Transactional(readOnly=true)** 메서드 **loadOrderInTx** 가 TX를 열고 **Order** 엔티티를 조회한다. **items** 컬렉션은 LAZY 프록시로만 존재한다.
+3. **loadOrderInTx** 가 리턴되면서 TX가 종료된다. 세션이 닫히고 Order는 **detached** 상태가 된다.
+4. **runBad** 메서드(TX 없음)에서 **order.getItems().size()** 를 호출한다.
+5. Hibernate가 LAZY 프록시를 초기화하려 하지만 세션이 없어 **LazyInitializationException** 이 터진다.
+
+**FIXED**
+
+1. 컨트롤러가 `/api/demo/persistence/lazy-outside-tx?variant=FIXED` 요청을 받는다.
+2. 서비스의 **@Transactional(readOnly=true)** 메서드 **runFixed** 가 TX를 열며 진입한다.
+3. **JPQL 생성자 표현식**으로 **OrderSummaryHead** 와 **OrderItemSummaryDto** 를 직접 투영한다. 엔티티 프록시가 아닌 단순 Java 객체가 만들어진다.
+4. **OrderSummaryDto** 를 조립해 반환한다. TX가 종료되지만 반환 값은 순수 DTO라 세션과 무관하다.
+5. TX 밖에서 직렬화해도 LAZY 프록시가 없으므로 **LazyInitializationException** 이 발생하지 않는다.
+
+## 한줄 요약
+
+**DTO 투영**으로 엔티티를 세션 밖으로 내보내지 않으면 **LazyInitializationException** 을 원천 차단할 수 있다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// LazyOutsideTxScenario.java — runBad
+
+@Transactional(readOnly = true)
+public Order loadOrderInTx(long orderId) {
+    return orderRepository.findById(orderId).orElseThrow();
+    // TX 종료 → 세션 닫힘 → Order는 detached 상태로 반환
+}
+
+@DemoRun
+public Map<String, Object> runBad(long orderId) {
+    Order order = self.loadOrderInTx(orderId); // 프록시 경유로 TX 열고 조회, TX 종료
+    int size = order.getItems().size();        // TX 밖 LAZY 접근 → LazyInitializationException
+    ...
+}
+```
+
+### FIXED
+
+```java
+// OrderRepository.java — DTO 투영 쿼리
+
+@Query("""
+    select new com.portfolio.jpa.demo.persistence.OrderSummaryHead(
+        o.id, m.name
+    )
+    from Order o join o.member m
+    where o.id = :orderId
+    """)
+Optional<OrderSummaryHead> findSummaryHeadById(@Param("orderId") Long orderId);
+
+@Query("""
+    select new com.portfolio.jpa.demo.persistence.OrderItemSummaryDto(
+        p.id, p.name, oi.quantity, oi.unitPrice
+    )
+    from OrderItem oi join oi.product p
+    where oi.order.id = :orderId
+    """)
+List<OrderItemSummaryDto> findItemSummariesByOrderId(@Param("orderId") Long orderId);
+
+// LazyOutsideTxScenario.java — runFixed
+
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed(long orderId) {
+    OrderSummaryHead head = orderRepository.findSummaryHeadById(orderId).orElseThrow();
+    List<OrderItemSummaryDto> items = orderRepository.findItemSummariesByOrderId(orderId);
+    OrderSummaryDto summary = new OrderSummaryDto(head.orderId(), head.memberName(), items.size(), items);
+    // 반환 값은 순수 DTO — 세션과 무관, TX 밖 직렬화 안전
+    ...
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Order", "OrderItem", "Member"]} height="380px" fitView />
+
+**Order** 와 **OrderItem** 의 관계(**@OneToMany LAZY**), **Order** 와 **Member** 의 관계(**@ManyToOne LAZY**) 가 핵심이다. 두 연관 모두 세션이 닫힌 뒤 접근하면 **LazyInitializationException** 대상이 된다.
+
+## Bad 쪽에서 벌어지는 일
+
+- **TX 경계 = 세션 경계**: OSIV=false 환경에서 **@Transactional** 이 끝나는 순간 EntityManager가 닫힌다. 엔티티는 detached 상태가 된다.
+- **LAZY 프록시의 구조**: Hibernate는 LAZY 필드에 실제 객체 대신 Proxy(바이트코드 서브클래스)를 심어 둔다. 첫 접근 시 SessionFactory에서 열린 세션을 찾아 SQL을 날리도록 설계돼 있다.
+- **세션 없음 = 예외**: detached 상태의 엔티티 프록시에 접근하면 Hibernate는 세션을 찾지 못해 즉시 **LazyInitializationException: could not initialize proxy - no Session** 을 던진다.
+- **스택 트레이스 예시**: `org.hibernate.LazyInitializationException: failed to lazily initialize a collection of role: com.portfolio.jpa.domain.order.Order.items: could not initialize proxy - no Session`
+- **실전에서 자주 터지는 위치**: JSON 직렬화(Jackson이 items 필드를 serialize할 때), 컨트롤러 디버그 로그, Thymeleaf/FreeMarker 뷰 렌더링, 테스트 assertion 단계.
+- **OSIV=true 시**: Spring이 요청 전체를 세션으로 감싸 주기 때문에 이 예외가 숨는다. 하지만 아래 FIXED 항목에서 설명하듯 이건 진짜 해결이 아니다.
+- **runBad 흐름 요약**: `self.loadOrderInTx` 호출 → 프록시 경유 → 새 TX 열림 → Order SELECT → TX 닫힘 → 세션 닫힘 → `order.getItems().size()` → LazyInitializationException.
+
+## Fixed 쪽에서 벌어지는 일
+
+- **DTO 투영의 세션 독립성**: JPQL 생성자 표현식은 DB 컬럼 값을 Java 생성자로 바로 매핑한다. 결과물은 Hibernate 관리 밖의 순수 Java 객체라 세션이 닫혀도 아무 문제가 없다.
+- **명시적 반환 계약**: 서비스가 엔티티 대신 DTO를 반환하면 호출자가 "이 객체에 LAZY 프록시는 없다"는 보장을 얻는다. API 계약이 명확해진다.
+- **N+1 방지 부수 효과**: 생성자 표현식 쿼리는 필요한 컬럼만 SELECT하므로 불필요한 연관 로딩이 원천 차단된다.
+- **fetch join / @EntityGraph 보조 수단**: 엔티티를 반환해야 하는 경우(집계 연산, 영속 상태 갱신 등)에는 fetch join이나 **@EntityGraph** 로 LAZY 연관을 같은 TX 안에서 미리 초기화하는 방법도 있다. 그러나 이 방법은 "엔티티를 세션 밖으로 들고 나오는 구조" 자체를 유지하므로 장기적으로 DTO 투영 쪽이 더 안전하다.
+- **OSIV=true 방식의 단점**: 요청 전체에 세션이 열려 있어 컨트롤러나 뷰에서 LAZY 접근이 반복될 때마다 암묵적 N+1이 발생한다. 트랜잭션 경계가 모호해지고 DB 커넥션 점유 시간이 길어진다. Spring Boot 2.0 이후 OSIV 기본값이 false로 권고되는 이유이기도 하다.
+
+## 참고
+
+- [Hibernate User Guide — LazyInitializationException](https://docs.jboss.org/hibernate/orm/current/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)
+- [Spring Boot — spring.jpa.open-in-view](https://docs.spring.io/spring-boot/reference/data/sql.html#data.sql.jpa-and-spring-data)
