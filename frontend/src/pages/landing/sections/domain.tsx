@@ -1,4 +1,5 @@
 import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { ENTITIES, RELATIONS } from '@/components/domain/graph'
 
 export function DomainSection() {
   return (
@@ -8,7 +9,7 @@ export function DomainSection() {
           <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">01 / Domain</span>
           <h2 className="text-3xl md:text-4xl font-semibold tracking-tight">E-commerce 도메인</h2>
           <p className="text-sm md:text-base text-muted-foreground max-w-2xl">
-            6개 엔티티 · 7개 연관관계. 모든 연관은 <span className="font-mono">LAZY</span>로 잡혀 있어 N+1·페치 전략 실험에 적합한 구조입니다.
+            {ENTITIES.length}개 엔티티 · {RELATIONS.length}개 연관관계. 모든 연관은 <span className="font-mono">LAZY</span>로 잡혀 있어 N+1·페치 전략 실험에 적합한 구조입니다.
             노드를 드래그해 레이아웃을 움직여 볼 수 있습니다.
           </p>
         </header>
