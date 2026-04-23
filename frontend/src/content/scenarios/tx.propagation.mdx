@@ -1,0 +1,105 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 트랜잭션 전파(Propagation)란?
+
+Spring의 **@Transactional**에는 **propagation** 속성이 있습니다. 이 속성은 "이미 활성 트랜잭션이 있을 때 새로 호출된 트랜잭션 메서드가 어떻게 동작할 것인가"를 결정합니다.
+
+두 가지 핵심 값을 비교합니다.
+
+- **REQUIRED** (기본값): 이미 활성 트랜잭션이 있으면 그 트랜잭션에 합류하고, 없으면 새로 시작합니다. 합류했으므로 외부 트랜잭션이 롤백되면 서브 작업도 함께 롤백됩니다.
+- **REQUIRES_NEW**: 항상 새로운 물리 트랜잭션을 시작합니다. 기존 트랜잭션은 일시정지(suspend)되고 새 트랜잭션이 독립 커밋 또는 롤백됩니다. 외부 트랜잭션의 운명과 무관합니다.
+
+## 과정
+
+**BAD (REQUIRED 합류)**
+
+1. 컨트롤러가 **runBad(memberId)** 호출 → 외부 트랜잭션(T1) 시작.
+2. **writeAuditRequired** 진입 → **REQUIRED**이므로 T1에 합류(새 트랜잭션 없음).
+3. **audit_logs** insert — T1 내 쓰기로 예약됨(T1이 커밋되어야 확정).
+4. **runBad** 내부에서 **IllegalStateException** 발생.
+5. Spring이 T1 전체를 롤백 → 합류된 insert도 함께 사라짐.
+6. 결과: **audit_logs** row 수 = 0.
+
+**FIXED (REQUIRES_NEW 독립 커밋)**
+
+1. 컨트롤러가 **runFixed(memberId)** 호출 → 외부 트랜잭션(T1) 시작.
+2. **writeAuditRequiresNew** 진입 → **REQUIRES_NEW** → T1 일시정지, 새 트랜잭션(T2) 시작.
+3. T2에서 **audit_logs** insert 후 **T2 단독 commit** — 이 시점에 row가 확정됨.
+4. T1 재개 → **runFixed** 내부에서 **IllegalStateException** 발생.
+5. Spring이 T1만 롤백(T2는 이미 독립 커밋 완료).
+6. 결과: **audit_logs** row 수 = 1.
+
+## 한줄 요약
+
+**REQUIRES_NEW**는 외부 트랜잭션과 별개의 물리 트랜잭션을 열기 때문에, 외부가 롤백돼도 서브 작업은 독립 커밋으로 살아남는다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// PropagationAuditService.java — writeAuditRequired
+@Transactional(propagation = Propagation.REQUIRED)
+public void writeAuditRequired(long memberId, String message) {
+    auditLogRepository.saveAndFlush(AuditLog.create(memberId, message));
+    // REQUIRED → 외부 TX에 합류, 외부 롤백 시 이 insert도 함께 롤백됨
+}
+
+// PropagationScenario.java — runBad
+@DemoRun
+@Transactional
+public Map<String, Object> runBad(long memberId) {
+    auditService.writeAuditRequired(memberId, "BAD main action");
+    throw new IllegalStateException("simulated main-tx failure");
+    // 결과: T1 전체 롤백 → audit_logs row = 0
+}
+```
+
+### FIXED
+
+```java
+// PropagationAuditService.java — writeAuditRequiresNew
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void writeAuditRequiresNew(long memberId, String message) {
+    auditLogRepository.saveAndFlush(AuditLog.create(memberId, message));
+    // REQUIRES_NEW → 외부 TX 일시정지, 새 TX(T2)로 독립 커밋
+}
+
+// PropagationScenario.java — runFixed
+@DemoRun
+@Transactional
+public Map<String, Object> runFixed(long memberId) {
+    auditService.writeAuditRequiresNew(memberId, "FIXED main action");
+    throw new IllegalStateException("simulated main-tx failure");
+    // 결과: T2는 이미 커밋됨 → T1만 롤백 → audit_logs row = 1
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Member"]} height="380px" fitView />
+
+**AuditLog**는 **memberId**로 Member를 참조하는 FK-less 감사 로그 테이블입니다. 관찰 포인트는 실행 후 **audit_logs** row 수입니다. DomainDiagram에 AuditLog 노드가 없으므로 하이라이트는 Member만 표시합니다.
+
+## Bad 쪽에서 벌어지는 일
+
+- **writeAuditRequired**는 **Propagation.REQUIRED** → 외부 트랜잭션(T1)에 합류.
+- 합류 상태에서 **saveAndFlush**가 insert를 실행하지만, insert는 T1의 일부이므로 T1이 커밋되어야 확정.
+- **runBad**에서 **IllegalStateException** 발생 → Spring이 T1 전체를 롤백.
+- T1에 합류했던 insert도 함께 사라짐 → **auditLogCountAfter = 0** 이 핵심 관찰 포인트.
+- 주의: 서브 메서드 내부에서 예외를 catch해 삼켰더라도 Spring은 T1을 **rollback-only**로 마킹한다. 이 상태에서 T1을 커밋하려 하면 **UnexpectedRollbackException**이 발생한다.
+- **sqlLog에는 insert into audit_logs가 포함**된다. SqlCaptureInspector는 SQL 실행 직전에 기록하므로, 롤백되더라도 로그에는 남는다.
+
+## Fixed 쪽에서 벌어지는 일
+
+- **writeAuditRequiresNew**는 **Propagation.REQUIRES_NEW** → 기존 T1을 일시정지하고 새 물리 커넥션으로 T2 시작.
+- T2 안에서 **saveAndFlush** 실행 → T2 단독 커밋 완료. 이 시점에 **audit_logs** row가 DB에 확정.
+- T1 재개 → **runFixed**에서 **IllegalStateException** → T1만 롤백.
+- T2는 이미 독립 커밋 완료였으므로 영향 없음 → **auditLogCountAfter = 1**.
+- 실전 활용 사례: 감사 로그, 알림 이력, 결제 audit처럼 "주 작업이 실패하더라도 반드시 기록이 남아야 하는 것"은 **REQUIRES_NEW**로 분리한다.
+- 주의점: REQUIRES_NEW는 새 커넥션을 획득하므로 커넥션 풀 압박이 생길 수 있다. 고빈도 호출에서는 풀 크기를 고려해야 한다.
+
+## 참고
+
+- [Spring Framework — Transaction Propagation](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html)
+- [Baeldung — Transaction Propagation and Isolation in Spring @Transactional](https://www.baeldung.com/spring-transactional-propagation-isolation)
