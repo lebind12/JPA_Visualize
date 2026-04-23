@@ -1,0 +1,113 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## OSIV(Open Session In View)란?
+
+**OSIV**는 HTTP 요청 전체를 Hibernate 세션으로 감싸는 패턴이다. 활성화하면 **@Transactional** 이 끝난 뒤에도 요청이 끝날 때까지 세션이 살아 있어, 컨트롤러나 뷰 레이어에서 LAZY 프록시를 자유롭게 초기화할 수 있다.
+
+Spring Boot 2.0 이전에는 **spring.jpa.open-in-view** 의 기본값이 **true** 였다. 하지만 이 설정은 트랜잭션 밖에서 암묵적 N+1 쿼리를 유발하고, DB 커넥션을 요청 전체 동안 점유하며, 트랜잭션 경계를 모호하게 만든다는 이유로 Spring Boot 2.0+부터 기본값이 **false** 로 변경됐다. 실전에서는 기본값인 **false** 를 유지하고 DTO 계약으로 해결하는 것이 권장된다.
+
+## 과정
+
+**BAD (OSIV=false, 기본)**
+
+1. 컨트롤러가 **runBad(limit)** 을 호출한다.
+2. **self.loadOrdersInTx(limit)** 경유 → 프록시가 TX를 열고 id 리스트 조회 후 **findAllById** 로 **Order** 리스트를 로드한다. **member** 와 **items** 는 LAZY 프록시 상태다.
+3. **loadOrdersInTx** 가 반환되면서 TX가 종료되고 세션이 닫힌다. **Order** 엔티티들은 detached 상태가 된다.
+4. for 루프에서 **order.getMember().getName()** 을 호출한다. LAZY 프록시 초기화를 시도하지만 세션이 없어 즉시 **LazyInitializationException** 이 발생한다.
+
+**BAD (OSIV=true, application-osiv.yml 프로파일)**
+
+1. 컨트롤러가 **runBad(limit)** 을 호출한다.
+2. 동일하게 **loadOrdersInTx** 에서 TX 열고 Order 리스트를 로드한다.
+3. TX가 종료되지만 세션은 HTTP 요청 끝까지 유지된다.
+4. for 루프의 각 반복마다 **member** LAZY 프록시 초기화(개별 SELECT), **items** LAZY 컬렉션 초기화(개별 SELECT)가 순서대로 발생한다. limit=5이면 member 5회 + items 5회 = 10+ 쿼리가 나간다(N+1 폭증).
+
+**FIXED**
+
+1. 컨트롤러가 **runFixed(limit)** 을 호출한다.
+2. **@Transactional(readOnly=true)** 안에서 id 리스트를 먼저 조회한다.
+3. 각 id에 대해 **findSummaryHeadById** 와 **findItemSummariesByOrderId** 로 DTO를 투영한다. 엔티티 프록시는 생성되지 않는다.
+4. 순수 Java 객체인 **OrderSummaryDto** 리스트를 반환한다. TX 밖 직렬화에서도 LAZY 프록시가 없으므로 OSIV 설정과 완전히 무관하게 동작한다.
+
+## 한줄 요약
+
+같은 코드가 OSIV 설정에 따라 예외 또는 N+1로 드러난다. **DTO 계약**으로 두 함정 모두 우회한다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// OsivToggleScenario.java — loadOrdersInTx + runBad
+
+@Transactional(readOnly = true)
+public List<Order> loadOrdersInTx(int limit) {
+    List<Long> ids = orderRepository.findFirst10OrderIds(PageRequest.of(0, limit));
+    List<Order> orders = orderRepository.findAllById(ids);
+    return orders.stream().sorted(Comparator.comparing(Order::getId)).toList();
+    // TX 종료 → 세션 닫힘 → Order 엔티티들은 detached 상태로 반환
+}
+
+@DemoRun
+public Map<String, Object> runBad(int limit) {
+    List<Order> orders = self.loadOrdersInTx(limit); // TX 종료됨
+
+    for (Order order : orders) {
+        order.getMember().getName();           // OSIV=false: 여기서 LazyInitializationException
+        totalItemCount += order.getItems().size(); // OSIV=true: 매 반복마다 별도 SELECT
+        touchedCount++;
+    }
+    ...
+}
+```
+
+### FIXED
+
+```java
+// OsivToggleScenario.java — runFixed
+
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed(int limit) {
+    List<Long> ids = orderRepository.findFirst10OrderIds(PageRequest.of(0, limit));
+
+    List<OrderSummaryDto> summaries = new ArrayList<>();
+    for (Long id : ids) {
+        orderRepository.findSummaryHeadById(id).ifPresent(head -> {
+            List<OrderItemSummaryDto> items = orderRepository.findItemSummariesByOrderId(id);
+            // TX 안에서 DTO 투영 — 엔티티 프록시 없음
+            summaries.add(new OrderSummaryDto(head.orderId(), head.memberName(), items.size(), items));
+        });
+    }
+    // 반환 값은 순수 DTO — OSIV 설정 무관, TX 밖 직렬화 안전
+    ...
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Order", "OrderItem", "Member"]} height="380px" fitView />
+
+**Order** 의 **member(@ManyToOne LAZY)** 와 **items(@OneToMany LAZY)** 를 TX 밖에서 리스트 반복으로 접근할 때 OSIV 설정에 따라 결과가 달라진다.
+
+## Bad 쪽에서 벌어지는 일
+
+| OSIV 설정 | 결과 |
+|---|---|
+| false (기본) | LazyInitializationException (첫 반복에서 즉시) |
+| true (**application-osiv.yml**) | 예외 없음. 대신 매 반복마다 개별 SELECT → N+1 |
+
+**OSIV=false** 환경에서는 TX가 끝나는 순간 세션이 닫히고 엔티티가 detached 상태가 된다. 이후 LAZY 프록시 접근은 Hibernate가 세션을 찾지 못해 즉시 **LazyInitializationException** 을 던진다.
+
+사용자는 **SPRING_PROFILES_ACTIVE=osiv** 로 백엔드를 재기동한 뒤 BAD 호출 시 exceptionCaught=null, osivActive=true, queryCount 10+ 를 직접 확인할 수 있다.
+
+## Fixed 쪽에서 벌어지는 일
+
+**DTO 계약**은 OSIV 설정과 완전히 독립적이다. **@Transactional** 안에서 DTO로 조립을 완료하기 때문에 엔티티 프록시가 세션 밖으로 나가지 않는다. OSIV=false 환경에서도 OSIV=true 환경에서도 동일한 쿼리 수와 동일한 응답을 반환한다.
+
+5-10 **LazyOutsideTxScenario** 가 단일 Order에서 같은 원리를 보여줬다면, 이 시나리오는 리스트 반복으로 확장해 N+1 폭증 패턴을 함께 드러낸다. 실전에서는 **findSummaryHeadById** 와 **findItemSummariesByOrderId** 를 IN절 한 방 쿼리로 교체하면 추가 쿼리 수를 O(1)로 줄일 수 있다.
+
+## 참고
+
+- [Spring Boot — spring.jpa.open-in-view](https://docs.spring.io/spring-boot/reference/data/sql.html#data.sql.jpa-and-spring-data)
+- [Hibernate User Guide — LazyInitializationException](https://docs.jboss.org/hibernate/orm/current/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)

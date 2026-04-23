@@ -1,0 +1,5 @@
+# OSIV 토글 시나리오(5-12) 대조 실험 전용 프로파일.
+# SPRING_PROFILES_ACTIVE=osiv 로 재기동하면 활성화.
+spring:
+  jpa:
+    open-in-view: true
