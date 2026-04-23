@@ -1,4 +1,5 @@
 import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { OsivToggleFlow } from '@/components/lab/viz/OsivToggleFlow'
 
 ## OSIV(Open Session In View)란?
 
@@ -7,6 +8,8 @@ import { DomainDiagram } from '@/components/domain/domain-diagram'
 Spring Boot 2.0 이전에는 **spring.jpa.open-in-view** 의 기본값이 **true** 였다. 하지만 이 설정은 트랜잭션 밖에서 암묵적 N+1 쿼리를 유발하고, DB 커넥션을 요청 전체 동안 점유하며, 트랜잭션 경계를 모호하게 만든다는 이유로 Spring Boot 2.0+부터 기본값이 **false** 로 변경됐다. 실전에서는 기본값인 **false** 를 유지하고 DTO 계약으로 해결하는 것이 권장된다.
 
 ## 과정
+
+<OsivToggleFlow />
 
 **BAD (OSIV=false, 기본)**
 
