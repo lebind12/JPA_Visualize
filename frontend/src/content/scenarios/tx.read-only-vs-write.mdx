@@ -1,0 +1,92 @@
+import { DomainDiagram } from '@/components/domain/domain-diagram'
+
+## 읽기 전용 트랜잭션(readOnly = true)이란?
+
+Spring의 **@Transactional(readOnly = true)**는 두 가지 효과를 가집니다.
+
+첫째, Hibernate가 영속성 컨텍스트에 **스냅샷을 보관하지 않습니다.** 일반 트랜잭션에서는 엔티티를 로드할 때 원본 상태의 복사본(스냅샷)을 함께 저장해 두고, 커밋 직전에 현재 상태와 비교(dirty checking)해 변경분을 UPDATE로 내보냅니다. readOnly=true이면 이 스냅샷 자체를 뜨지 않으므로 비교할 기준이 없어 dirty checking이 동작하지 않습니다.
+
+둘째, Hibernate의 **FlushMode가 MANUAL**로 전환됩니다. 자동 flush가 꺼지므로, 세션이 닫히거나 명시적으로 **flush()**를 호출하지 않는 한 SQL이 DB로 내려가지 않습니다.
+
+이 두 효과가 합쳐지면 단순 최적화 이상의 의미를 가집니다. 조회 서비스 내부에서 개발자가 실수로 엔티티의 상태변경 메서드를 호출하더라도 DB에 UPDATE가 나가지 않습니다. **readOnly=true는 "읽기 전용 메서드에서 실수로 엔티티를 변경해도 DB에 반영을 차단하는 가드"** 역할을 합니다.
+
+## 과정
+
+**BAD (@Transactional, readOnly 미지정)**
+
+1. 트랜잭션 시작 — Hibernate가 스냅샷 보관 모드(기본값 FlushMode.AUTO)로 세션 열림.
+2. **findById**로 Member 로드 → 원본 name 스냅샷 저장.
+3. **renameTo("원본 (oops-BAD)")** 호출 → 세션 내 name 변경.
+4. 메서드 반환 → Spring이 커밋 직전 dirty checking 실행 → 스냅샷과 현재 상태 비교 → UPDATE 감지 → **UPDATE members SET name=? WHERE id=?** 발행.
+5. 커밋 완료 → DB에 오염된 name이 남는다.
+
+**FIXED (@Transactional(readOnly = true))**
+
+1. 트랜잭션 시작 — Hibernate가 스냅샷 미보관 + **FlushMode.MANUAL**로 세션 열림.
+2. **findById**로 Member 로드 → 스냅샷 없음.
+3. **renameTo("원본 (oops-FIXED)")** 호출 → 세션 내 name 변경되지만 비교 기준 없음.
+4. 메서드 반환 → flush 대상 없음 → UPDATE 발행 없음 → 커밋(실제로는 read-only 마킹으로 처리).
+5. 커밋 완료 → DB name은 **"원본"** 그대로.
+
+## 한줄 요약
+
+**@Transactional(readOnly = true)**는 dirty checking과 자동 flush를 끄기 때문에, 조회 메서드 안에서 실수로 엔티티를 변경해도 DB에 UPDATE가 나가지 않는다.
+
+## 구현 코드
+
+### BAD
+
+```java
+// ReadOnlyVsWriteScenario.java — runBad
+@DemoRun
+@Transactional
+public Map<String, Object> runBad(long memberId) {
+    Member m = memberRepository.findById(memberId).orElseThrow();
+    String nameBeforeMutation = m.getName();
+    m.renameTo(nameBeforeMutation + " (oops-BAD)");  // 실수로 변경
+    // 트랜잭션 커밋 시 dirty checking → UPDATE members 발행
+    ...
+}
+```
+
+### FIXED
+
+```java
+// ReadOnlyVsWriteScenario.java — runFixed
+@DemoRun
+@Transactional(readOnly = true)
+public Map<String, Object> runFixed(long memberId) {
+    Member m = memberRepository.findById(memberId).orElseThrow();
+    String nameBeforeMutation = m.getName();
+    m.renameTo(nameBeforeMutation + " (oops-FIXED)");  // 동일 실수
+    // readOnly=true → 스냅샷 없음, FlushMode.MANUAL → UPDATE 발행 안 됨
+    ...
+}
+```
+
+## 건드리는 도메인
+
+<DomainDiagram highlight={["Member"]} height="380px" fitView />
+
+**Member.name**이 관찰 포인트입니다. BAD는 커밋 후 오염된 이름이 DB에 남고, FIXED는 "원본"이 그대로 유지됩니다.
+
+## Bad 쪽에서 벌어지는 일
+
+- **@Transactional** 기본값(readOnly=false) → Hibernate가 SELECT 시 **스냅샷** 보관.
+- **renameTo** 호출로 세션 내 **name** 변경 → 스냅샷과 diff 발생.
+- 커밋 직전 dirty checking이 diff를 감지 → **UPDATE members SET name=? WHERE id=?** 자동 발행.
+- **sqlLog에 SELECT + UPDATE 2개**, **committedNameInDb**는 "원본 (oops-BAD)"로 오염.
+- 실전 교훈: 리뷰 코드에서 조회 서비스에 **readOnly**가 빠진 채 setter·상태변경 메서드가 호출되면, 호출하는 쪽은 "조회만 했다"고 생각하지만 실제로는 의도치 않은 UPDATE가 새나갈 수 있다.
+
+## Fixed 쪽에서 벌어지는 일
+
+- **@Transactional(readOnly = true)** → Hibernate가 스냅샷을 뜨지 않고 **FlushMode.MANUAL**로 세션 열림.
+- **renameTo** 호출로 세션 내 name이 변경되지만 스냅샷 자체가 없어 dirty checking 대상에서 제외.
+- 세션 종료 시 flush 없이 변경 버려짐 → UPDATE 발행 없음.
+- **sqlLog는 SELECT 1개**, **committedNameInDb == "원본"** 유지.
+- 덤: 스냅샷 보관 비용(메모리)과 dirty check 순회 비용이 절감돼 순수 조회 메서드에서 성능상 이점도 있다.
+
+## 참고
+
+- [Spring Framework — @Transactional settings](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+- [Hibernate User Guide — Read-only entities](https://docs.jboss.org/hibernate/orm/current/userguide/html_single/Hibernate_User_Guide.html#flushing-readonly)

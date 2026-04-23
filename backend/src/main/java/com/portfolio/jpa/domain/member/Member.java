@@ -31,4 +31,9 @@ public class Member extends BaseTimeEntity {
     public static Member create(String email, String name) {
         return new Member(email, name);
     }
+
+    public void renameTo(String newName) {
+        if (newName == null || newName.isBlank()) throw new IllegalArgumentException("newName must not be blank");
+        this.name = newName;
+    }
 }
