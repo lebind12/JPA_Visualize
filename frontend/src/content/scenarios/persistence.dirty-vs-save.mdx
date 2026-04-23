@@ -1,4 +1,5 @@
 import { DomainDiagram } from '@/components/domain/domain-diagram'
+import { DirtyVsSaveFlow } from '@/components/lab/viz/DirtyVsSaveFlow'
 
 ## save() 남용 vs Dirty Checking이란?
 
@@ -17,6 +18,8 @@ Spring Data JPA의 **SimpleJpaRepository.save(entity)**는 내부에서 **isNew*
 별도의 **save()** 호출이 필요 없다.
 
 ## 과정
+
+<DirtyVsSaveFlow />
 
 **BAD 흐름**
 
